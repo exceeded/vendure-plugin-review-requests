@@ -90,6 +90,20 @@ run('@huloglobal/vendure-plugin-review-requests (MariaDB)', () => {
         expect(res.sent).toBe(0);
     });
 
+    it('checkExcluded reports why an email is excluded', async () => {
+        await svc().addExclusion('email', 'checkme@example.com', 'e2e');
+        await svc().addExclusion('email_domain', 'blockdom.test', 'e2e');
+        expect(await svc().checkExcluded('checkme@example.com')).toMatchObject({ excluded: true, via: 'excluded' });
+        expect(await svc().checkExcluded('anyone@blockdom.test')).toMatchObject({ excluded: true, via: 'domain rule' });
+        expect(await svc().checkExcluded('fine@gmail.com')).toMatchObject({ excluded: false, via: null });
+    });
+
+    it('searchCustomers returns an array (empty on the no-customer fixture)', async () => {
+        const r = await svc().searchCustomers('sam');
+        expect(Array.isArray(r)).toBe(true);
+        expect(await svc().searchCustomers('a')).toEqual([]); // < 2 chars → empty
+    });
+
     it('template edit + reset round-trips', async () => {
         await svc().saveTemplate(1, 'Custom {{firstName}}', '<p>{{reviewUrl}}</p>');
         expect((await svc().getTemplate(1)).isDefault).toBe(false);
