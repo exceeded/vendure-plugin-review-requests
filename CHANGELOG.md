@@ -4,6 +4,16 @@ All notable changes to `@huloglobal/vendure-plugin-review-requests` are document
 here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-08-04
+
+### Added
+- **Upload image / asset library.** A new toolbar button opens Vendure's
+  asset picker — browse the library or upload a new image — and inserts it
+  into the email. Images are stored in your Vendure asset library like any
+  other asset. The previous insert-by-URL button stays. Editor selection
+  is now saved/restored so toolbar and colour actions apply reliably even
+  after a dialog opens.
+
 ## [0.7.0] — 2026-08-04
 
 ### Added

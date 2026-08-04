@@ -1,6 +1,6 @@
 import { Component, OnInit, ChangeDetectorRef, ViewChild, ElementRef } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { NotificationService } from '@vendure/admin-ui/core';
+import { NotificationService, ModalService, AssetPickerDialogComponent } from '@vendure/admin-ui/core';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 
 interface ReviewConfig {
@@ -217,7 +217,8 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
                             <button type="button" class="rte-btn" title="Outdent" (click)="exec('outdent')">|&#8676;</button>
                             <span class="rte-sep"></span>
                             <button type="button" class="rte-btn" title="Link" (click)="addLink()">&#128279;</button>
-                            <button type="button" class="rte-btn" title="Insert image" (click)="insertImage()">&#128247;</button>
+                            <button type="button" class="rte-btn" title="Insert image by URL" (click)="insertImage()">&#128247;</button>
+                            <button type="button" class="rte-btn" title="Upload / choose from asset library" (click)="pickAsset()">&#128193;</button>
                             <button type="button" class="rte-btn" title="Insert button" (click)="insertButton()">Btn</button>
                             <button type="button" class="rte-btn" title="Divider" (click)="exec('insertHorizontalRule')">&#8213;</button>
                             <span class="rte-sep"></span>
@@ -241,7 +242,7 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
                     </div>
 
                     <div class="rte-editor" *ngIf="!htmlMode" #emailEditor contenteditable="true"
-                         (input)="onEditorInput()" (blur)="onEditorInput()" (dragover)="$event.preventDefault()" (drop)="onEditorDrop($event)"></div>
+                         (input)="onEditorInput()" (blur)="onEditorInput()" (keyup)="saveRange()" (mouseup)="saveRange()" (dragover)="$event.preventDefault()" (drop)="onEditorDrop($event)"></div>
                     <textarea class="rte-source" *ngIf="htmlMode" [(ngModel)]="template.body" (ngModelChange)="tplDirty=true" rows="14" spellcheck="false"></textarea>
                 </div>
 
@@ -487,7 +488,7 @@ export class ReviewRequestsComponent implements OnInit {
     platform = 'trustpilot';
     platformTemplates: any = { trustpilot: 'https://www.trustpilot.com/evaluate/{domain}', google: 'https://search.google.com/local/writereview?placeid={domain}', reviewsio: 'https://www.reviews.io/company-review/store/{domain}/new' };
 
-    constructor(private http: HttpClient, private notify: NotificationService, private cdr: ChangeDetectorRef, private sanitizer: DomSanitizer) {}
+    constructor(private http: HttpClient, private notify: NotificationService, private cdr: ChangeDetectorRef, private sanitizer: DomSanitizer, private modalService: ModalService) {}
 
     get current(): ReviewConfig | null { return this.configs[this.currentIdx] || null; }
 
@@ -605,22 +606,38 @@ export class ReviewRequestsComponent implements OnInit {
         if (!on) { this.htmlMode = false; setTimeout(() => this.syncEditorFromModel(), 0); }
         else { this.onEditorInput(); this.htmlMode = true; }
     }
-    exec(cmd: string, val?: string) { const ed = this.editorEl(); if (!ed) return; ed.focus(); try { document.execCommand(cmd, false, val); } catch {} this.onEditorInput(); }
+    private savedRange: Range | null = null;
+    saveRange() { const sel = window.getSelection(); const ed = this.editorEl(); if (sel && sel.rangeCount && ed && ed.contains(sel.anchorNode)) this.savedRange = sel.getRangeAt(0).cloneRange(); }
+    private restoreRange() { const ed = this.editorEl(); if (!ed) return; ed.focus(); if (this.savedRange && ed.contains(this.savedRange.commonAncestorContainer)) { const sel = window.getSelection(); sel?.removeAllRanges(); sel?.addRange(this.savedRange); } }
+    exec(cmd: string, val?: string) { const ed = this.editorEl(); if (!ed) return; this.restoreRange(); try { document.execCommand(cmd, false, val); } catch {} this.saveRange(); this.onEditorInput(); }
+    pickAsset() {
+        const ed = this.editorEl(); if (!ed) return;
+        this.modalService.fromComponent(AssetPickerDialogComponent as any, { size: 'xl' }).subscribe((result: any) => {
+            if (result && result.length) {
+                const imgs = result.map((a: any) => `<img src="${a.preview || a.source}" alt="${String(a.name || '').replace(/"/g, '&quot;')}" style="max-width:100%;height:auto;border-radius:6px">`).join('');
+                this.restoreRange();
+                try { document.execCommand('insertHTML', false, imgs); } catch {}
+                this.onEditorInput();
+            }
+        });
+    }
     setBlock(tag: string) { if (tag) this.exec('formatBlock', '<' + tag + '>'); }
     insertImage() {
-        const ed = this.editorEl(); if (!ed) return; ed.focus();
+        const ed = this.editorEl(); if (!ed) return;
         const url = prompt('Image URL (https://…)', 'https://');
         if (!url) return;
         const alt = prompt('Alt text (for accessibility)', '') || '';
+        this.restoreRange();
         const html = `<img src="${url}" alt="${alt.replace(/"/g, '&quot;')}" style="max-width:100%;height:auto;border-radius:6px">`;
         try { document.execCommand('insertHTML', false, html); } catch {}
         this.onEditorInput();
     }
     addLink() { const url = prompt('Link URL (you can use a variable like {{reviewUrl}})', 'https://'); if (url) this.exec('createLink', url); }
     insertButton() {
-        const ed = this.editorEl(); if (!ed) return; ed.focus();
+        const ed = this.editorEl(); if (!ed) return;
         const label = prompt('Button text', 'Leave a review'); if (label === null) return;
         const url = prompt('Button link', '{{reviewUrl}}'); if (url === null) return;
+        this.restoreRange();
         const html = `<p style="text-align:center;margin:18px 0"><a href="${url}" style="display:inline-block;background:#00b67a;color:#fff;text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:8px">${label.replace(/</g, '&lt;')}</a></p>`;
         try { document.execCommand('insertHTML', false, html); } catch {}
         this.onEditorInput();
