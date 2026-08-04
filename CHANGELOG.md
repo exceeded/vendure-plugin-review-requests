@@ -4,6 +4,19 @@ All notable changes to `@huloglobal/vendure-plugin-review-requests` are document
 here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-08-04
+
+### Added
+- **Full editor toolbar**: text + highlight colour, font size, underline/
+  strikethrough, headings/subheadings/quotes, numbered lists, indent/
+  outdent, image insert (by URL, alt text), a custom button, horizontal
+  divider, left/centre/right align, clear-formatting and undo/redo.
+
+### Fixed
+- Editor text showed grey in dark mode: the admin theme was colouring
+  bare block elements. Canvas content now forces its own dark ink on the
+  white paper (inline colours in your HTML still win).
+
 ## [0.6.1] — 2026-08-04
 
 ### Fixed
