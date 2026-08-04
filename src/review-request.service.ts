@@ -161,6 +161,55 @@ export class ReviewRequestService implements OnModuleInit {
         await this.db.query(`DELETE FROM review_exclusion WHERE id = ?`, [id]);
     }
 
+    /** Is this email excluded, and via what? Used by the admin "check". */
+    async checkExcluded(email: string): Promise<{ excluded: boolean; via: string | null }> {
+        const e = String(email || '').toLowerCase();
+        const domain = e.split('@')[1] || '';
+        const [opt] = await this.db.query(`SELECT email FROM review_optout WHERE email = ? LIMIT 1`, [e]).catch(() => []);
+        if (opt) return { excluded: true, via: 'unsubscribed' };
+        const ex = await this.db.query(
+            `SELECT type FROM review_exclusion WHERE (type='email' AND value=?) OR (type='email_domain' AND value=?) LIMIT 1`,
+            [e, domain],
+        ).catch(() => []);
+        if (ex.length) return { excluded: true, via: ex[0].type === 'email_domain' ? 'domain rule' : 'excluded' };
+        return { excluded: false, via: null };
+    }
+
+    /** Live customer search with a batched "already excluded?" flag per row. */
+    async searchCustomers(q: string, limit = 10): Promise<any[]> {
+        const term = String(q || '').trim();
+        if (term.length < 2) return [];
+        const like = `%${term}%`;
+        const rows = await this.db.query(
+            `SELECT id, firstName, lastName, emailAddress FROM customer
+             WHERE deletedAt IS NULL
+               AND (emailAddress LIKE ? OR firstName LIKE ? OR lastName LIKE ? OR CONCAT(firstName, ' ', lastName) LIKE ?)
+             ORDER BY (LOWER(emailAddress) = ?) DESC, id DESC
+             LIMIT ?`,
+            [like, like, like, like, term.toLowerCase(), Math.min(limit, 25)],
+        ).catch(() => []);
+        if (!rows.length) return [];
+        const emails = rows.map((r: any) => String(r.emailAddress || '').toLowerCase());
+        const domains = [...new Set(emails.map((e: string) => e.split('@')[1]).filter(Boolean))];
+        const emailPh = emails.map(() => '?').join(',');
+        const domPh = domains.length ? domains.map(() => '?').join(',') : "''";
+        const exRows = await this.db.query(
+            `SELECT type, value FROM review_exclusion
+             WHERE (type='email' AND value IN (${emailPh})) OR (type='email_domain' AND value IN (${domPh}))`,
+            [...emails, ...(domains.length ? domains : [])],
+        ).catch(() => []);
+        const optRows = await this.db.query(`SELECT email FROM review_optout WHERE email IN (${emailPh})`, emails).catch(() => []);
+        const exEmails = new Set(exRows.filter((r: any) => r.type === 'email').map((r: any) => r.value));
+        const exDomains = new Set(exRows.filter((r: any) => r.type === 'email_domain').map((r: any) => r.value));
+        const optSet = new Set(optRows.map((r: any) => r.email));
+        return rows.map((r: any) => {
+            const e = String(r.emailAddress || '').toLowerCase();
+            const d = e.split('@')[1] || '';
+            const via = optSet.has(e) ? 'unsubscribed' : exEmails.has(e) ? 'excluded' : exDomains.has(d) ? 'domain rule' : null;
+            return { id: r.id, firstName: r.firstName, lastName: r.lastName, email: r.emailAddress, excluded: !!via, via };
+        });
+    }
+
     async isExcluded(email: string): Promise<boolean> {
         const e = email.toLowerCase();
         const domain = e.split('@')[1] || '';

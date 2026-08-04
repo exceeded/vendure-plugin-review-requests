@@ -4,6 +4,21 @@ All notable changes to `@huloglobal/vendure-plugin-review-requests` are document
 here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-08-04
+
+### Added
+- **Live customer search in Exclusions.** Type a name or email and pick a
+  real customer to exclude — each result shows whether they're *already*
+  excluded (and why: excluded / domain rule / unsubscribed), so it doubles
+  as a quick "is this customer excluded?" check.
+- **Review-platform picker.** Choose Trustpilot / Google reviews /
+  Reviews.io / Custom and the review link is built for you (Trustpilot
+  keeps the live-rating auto-detect; the others use the link only). Any
+  site with a review URL already worked via the template — this makes it
+  one click.
+- Endpoints: `GET /review-requests/customers/search`,
+  `GET /review-requests/exclusions/check`.
+
 ## [0.2.0] — 2026-08-04
 
 ### Changed

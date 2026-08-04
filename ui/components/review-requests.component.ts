@@ -111,17 +111,25 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
         <!-- SETTINGS -->
         <ng-container *ngIf="!loading && current && tab==='settings'">
             <vdr-page-block><div class="card"><div class="card-block">
-                <h3 class="step-title">Connect Trustpilot</h3>
-                <p class="hint">Enter your Trustpilot domain and we'll build the review link. Add a free API key too and we'll pull in your live star rating automatically — nothing else to look up.</p>
+                <h3 class="step-title">Where should reviews go?</h3>
+                <p class="hint">Pick a platform and we build the review link. Trustpilot can also show your live star rating in the email (free API key). Google &amp; Reviews.io use the link only.</p>
                 <div class="form-grid">
-                    <div class="form-row"><label>Your Trustpilot domain</label>
-                        <input class="form-input" [(ngModel)]="current.trustpilotDomain" (ngModelChange)="markDirty()" placeholder="elite-software.co.uk"></div>
-                    <div class="form-row"><label>Free API key <small>(optional — for the star rating)</small></label>
+                    <div class="form-row"><label>Review platform</label>
+                        <select class="form-input" [(ngModel)]="platform" (ngModelChange)="onPlatform()">
+                            <option value="trustpilot">Trustpilot (recommended)</option>
+                            <option value="google">Google reviews</option>
+                            <option value="reviewsio">Reviews.io</option>
+                            <option value="custom">Custom link</option>
+                        </select></div>
+                    <div class="form-row"><label>{{ platformLabel() }}</label>
+                        <input class="form-input" [(ngModel)]="current.trustpilotDomain" (ngModelChange)="markDirty()" [placeholder]="platformPlaceholder()">
+                        <div class="hint" style="margin-top:4px">{{ platformHelp() }}</div></div>
+                    <div class="form-row" *ngIf="platform==='trustpilot'"><label>Free API key <small>(optional — for the star rating)</small></label>
                         <input class="form-input mono" [(ngModel)]="current.trustpilotApiKey" (ngModelChange)="markDirty()" placeholder="paste key or leave blank">
                         <div class="hint" style="margin-top:4px"><a href="https://developers.trustpilot.com/" target="_blank">Get a free key &#8594;</a></div></div>
                 </div>
                 <div class="picker">
-                    <button class="gbtn gbtn-primary gbtn-sm" (click)="connect()" [disabled]="connecting || !current.trustpilotDomain">{{ connecting ? 'Connecting…' : 'Connect Trustpilot' }}</button>
+                    <button class="gbtn gbtn-primary gbtn-sm" (click)="connect()" [disabled]="connecting || !current.trustpilotDomain">{{ connecting ? 'Checking…' : (platform==='trustpilot' ? 'Connect Trustpilot' : 'Check link') }}</button>
                     <span class="hint inline" *ngIf="connectMsg" [style.color]="connectOk ? 'var(--gb-amber-edge)' : 'var(--gb-muted)'">{{ connectMsg }}</span>
                 </div>
                 <div *ngIf="rating" class="rating-box" style="margin-top:6px">
@@ -195,6 +203,22 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
             <vdr-page-block><div class="card"><div class="card-block">
                 <h3 class="step-title">Excluded customers</h3>
                 <p class="hint">Emails or whole domains that never get a review request — wholesale accounts, staff, anyone who asked not to be contacted. Customers who click "unsubscribe" in an email are added automatically ({{ stats?.optOuts || 0 }} so far).</p>
+
+                <h4 class="subsection-title">Find a customer</h4>
+                <div class="picker">
+                    <input class="form-input" style="min-width:300px" placeholder="Search customers by name or email…" [(ngModel)]="custQuery" (ngModelChange)="onCustSearch()">
+                    <span class="hint inline" *ngIf="custSearching">Searching…</span>
+                </div>
+                <div class="cust-results" *ngIf="custQuery.length>=2 && !custSearching">
+                    <div class="cust-row" *ngFor="let c of custResults">
+                        <div class="cust-info"><strong>{{ c.firstName }} {{ c.lastName }}</strong><span class="hint mono">{{ c.email }}</span></div>
+                        <span class="pill st-skipped" *ngIf="c.excluded" [title]="'Already ' + c.via">✓ {{ c.via }}</span>
+                        <button class="gbtn gbtn-outline gbtn-sm" *ngIf="!c.excluded" (click)="excludeCustomer(c)">Exclude</button>
+                    </div>
+                    <p class="hint" *ngIf="!custResults.length">No customers match “{{ custQuery }}”.</p>
+                </div>
+
+                <h4 class="subsection-title">Or add manually</h4>
                 <div class="picker">
                     <select class="form-select" style="min-width:150px" [(ngModel)]="newExcl.type">
                         <option value="email">email</option><option value="email_domain">email domain</option>
@@ -330,6 +354,12 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
         .save-msg { display:inline-flex; align-items:center; gap:8px; font-size:13px; font-weight:600; } .save-msg.quiet { color:var(--gb-muted); font-weight:500; }
         .save-dot { width:8px; height:8px; border-radius:50%; background:var(--gb-amber); box-shadow:0 0 0 3px color-mix(in srgb,var(--gb-amber) 25%,transparent); }
         .save-spacer { flex:1; }
+        .cust-results { border:1px solid var(--gb-line); border-radius:10px; overflow:hidden; margin-bottom:12px; }
+        .cust-row { display:flex; align-items:center; gap:12px; padding:10px 14px; }
+        .cust-row + .cust-row { border-top:1px solid var(--gb-line-soft); }
+        .cust-row:hover { background:var(--gb-surface-2); }
+        .cust-info { flex:1; display:flex; flex-direction:column; gap:2px; min-width:0; }
+        .cust-info strong { font-size:13px; } .cust-info .hint { margin:0; }
         .update-banner { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; padding:12px 16px; border-radius:10px; font-size:13px; background:var(--gb-tint-warn); border:1px solid var(--gb-line-warn); }
         .update-banner .actions { display:flex; gap:6px; }
     `],
@@ -347,10 +377,13 @@ export class ReviewRequestsComponent implements OnInit {
     logStatus = '';
     exclusions: any[] = [];
     newExcl = { type: 'email', value: '', note: '' };
+    custQuery = ''; custResults: any[] = []; custSearching = false; private custTimer: any;
     template: any = null; tplDirty = false; preview: any = null;
     testEmail = ''; testing = false;
     running = false; checking = false; checkMsg = '';
     advancedOpen = false; connecting = false; connectMsg = ''; connectOk = false;
+    platform = 'trustpilot';
+    platformTemplates: any = { trustpilot: 'https://www.trustpilot.com/evaluate/{domain}', google: 'https://search.google.com/local/writereview?placeid={domain}', reviewsio: 'https://www.reviews.io/company-review/store/{domain}/new' };
 
     constructor(private http: HttpClient, private notify: NotificationService, private cdr: ChangeDetectorRef, private sanitizer: DomSanitizer) {}
 
@@ -364,11 +397,42 @@ export class ReviewRequestsComponent implements OnInit {
     reloadAll() {
         this.loading = true; this.dirty = false;
         this.http.get<ReviewConfig[]>('/review-requests/config').subscribe({
-            next: c => { this.configs = c; if (this.currentIdx >= c.length) this.currentIdx = 0; this.loading = false; this.loadForTab(this.tab); this.cdr.markForCheck(); },
+            next: c => { this.configs = c; if (this.currentIdx >= c.length) this.currentIdx = 0; this.loading = false; this.derivePlatform(); this.loadForTab(this.tab); this.cdr.markForCheck(); },
             error: () => { this.loading = false; this.notify.error('Failed to load review-request config'); },
         });
     }
-    onChannel() { this.dirty = false; this.rating = null; this.loadForTab(this.tab); }
+    onChannel() { this.dirty = false; this.rating = null; this.derivePlatform(); this.loadForTab(this.tab); }
+    derivePlatform() {
+        const t = this.current?.reviewUrlTemplate || '';
+        if (t.includes('trustpilot.com')) this.platform = 'trustpilot';
+        else if (t.includes('google.com')) this.platform = 'google';
+        else if (t.includes('reviews.io')) this.platform = 'reviewsio';
+        else this.platform = 'custom';
+    }
+    onPlatform() {
+        if (!this.current) return;
+        if (this.platform !== 'custom') this.current.reviewUrlTemplate = this.platformTemplates[this.platform];
+        this.connectMsg = ''; this.rating = null;
+        this.markDirty();
+    }
+    platformLabel(): string {
+        return this.platform === 'google' ? 'Your Google Place ID'
+            : this.platform === 'reviewsio' ? 'Your Reviews.io store ID'
+            : this.platform === 'custom' ? 'Your identifier (fills {domain} in the link)'
+            : 'Your Trustpilot domain';
+    }
+    platformPlaceholder(): string {
+        return this.platform === 'google' ? 'ChIJ… (Google Place ID)'
+            : this.platform === 'reviewsio' ? 'your-store-id'
+            : this.platform === 'custom' ? 'value for {domain}'
+            : 'elite-software.co.uk';
+    }
+    platformHelp(): string {
+        return this.platform === 'google' ? 'Find your Place ID at developers.google.com/maps/documentation/places/web-service/place-id — customers land straight on the "write a review" box.'
+            : this.platform === 'reviewsio' ? 'Your Reviews.io store ID from your Reviews.io dashboard.'
+            : this.platform === 'custom' ? 'Edit the full link template under Advanced settings.'
+            : 'Your domain exactly as it appears on Trustpilot.';
+    }
     go(t: Tab) { this.tab = t; this.loadForTab(t); }
     private loadForTab(t: Tab) {
         if (t === 'overview') { this.loadStats(); this.loadLog(); }
@@ -437,6 +501,26 @@ export class ReviewRequestsComponent implements OnInit {
         this.http.post<any>('/review-requests/test-send', { channelId: this.current.channelId, email: this.testEmail }).subscribe({
             next: r => { this.testing = false; r.ok ? this.notify.success('Test sent — check your inbox') : this.notify.error(r.reason || 'Send failed'); },
             error: err => { this.testing = false; this.notify.error(err?.error?.reason || 'Send failed'); },
+        });
+    }
+
+    onCustSearch() {
+        clearTimeout(this.custTimer);
+        const q = this.custQuery.trim();
+        if (q.length < 2) { this.custResults = []; this.custSearching = false; return; }
+        this.custSearching = true;
+        this.custTimer = setTimeout(() => {
+            this.http.get<any[]>(`/review-requests/customers/search?q=${encodeURIComponent(q)}`).subscribe({
+                next: r => { this.custSearching = false; this.custResults = r; this.cdr.markForCheck(); },
+                error: () => { this.custSearching = false; this.cdr.markForCheck(); },
+            });
+        }, 250);
+    }
+    excludeCustomer(c: any) {
+        const name = [c.firstName, c.lastName].filter(Boolean).join(' ');
+        this.http.post('/review-requests/exclusions', { type: 'email', value: c.email, note: name || 'customer' }).subscribe({
+            next: () => { c.excluded = true; c.via = 'excluded'; this.loadExclusions(); this.notify.success(`Excluded ${c.email}`); this.cdr.markForCheck(); },
+            error: () => this.notify.error('Failed to exclude'),
         });
     }
 

@@ -138,6 +138,18 @@ export class ReviewRequestController {
         return res.status(result.ok ? 200 : 500).json(result);
     }
 
+    // ── Admin: customer search + exclusion check ───────────────────────
+    @Get('customers/search')
+    async searchCustomers(@Ctx() ctx: RequestContext, @Res() res: Response, @Query('q') q?: string) {
+        if (denyUnlessAdmin(ctx, res, false)) return;
+        return res.json(await this.service.searchCustomers(q || ''));
+    }
+    @Get('exclusions/check')
+    async checkExclusion(@Ctx() ctx: RequestContext, @Res() res: Response, @Query('email') email?: string) {
+        if (denyUnlessAdmin(ctx, res, false)) return;
+        return res.json(await this.service.checkExcluded(email || ''));
+    }
+
     // ── Admin: exclusions ──────────────────────────────────────────────
     @Get('exclusions')
     async exclusions(@Ctx() ctx: RequestContext, @Res() res: Response) {
