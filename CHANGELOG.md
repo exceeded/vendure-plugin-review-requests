@@ -4,6 +4,16 @@ All notable changes to `@huloglobal/vendure-plugin-review-requests` are document
 here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-08-04
+
+### Added
+- **Visual email editor.** The invitation email now has a WYSIWYG editor
+  with a formatting toolbar (bold, italic, heading, lists, links, a
+  one-click review button, alignment), **drag-and-drop variable chips**
+  (drop {{firstName}}, {{productList}}, etc. anywhere), and a **Visual /
+  HTML toggle** so you can drop into raw HTML whenever you want. Live
+  preview + test-send unchanged.
+
 ## [0.5.0] — 2026-08-04
 
 ### Added

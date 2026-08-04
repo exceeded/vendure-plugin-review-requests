@@ -1,4 +1,4 @@
-import { Component, OnInit, ChangeDetectorRef } from '@angular/core';
+import { Component, OnInit, ChangeDetectorRef, ViewChild, ElementRef } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { NotificationService } from '@vendure/admin-ui/core';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
@@ -188,10 +188,40 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
         <ng-container *ngIf="!loading && current && tab==='email'">
             <vdr-page-block><div class="card"><div class="card-block">
                 <h3 class="step-title">Invitation email <small>({{ current.channelCode }})</small></h3>
-                <p class="hint">Variables: <code class="mono">&#123;&#123;firstName&#125;&#125;</code> <code class="mono">&#123;&#123;orderCode&#125;&#125;</code> <code class="mono">&#123;&#123;businessName&#125;&#125;</code> <code class="mono">&#123;&#123;reviewButton&#125;&#125;</code> <code class="mono">&#123;&#123;productList&#125;&#125;</code> <code class="mono">&#123;&#123;ratingBlock&#125;&#125;</code> · <span class="mini-chip" *ngIf="template?.isDefault">default</span><span class="mini-chip custom" *ngIf="template && !template.isDefault">customised</span></p>
-                <div class="form-row"><label>Subject</label><input class="form-input" [(ngModel)]="template.subject" (ngModelChange)="tplDirty=true" *ngIf="template"></div>
-                <div class="form-row"><label>Body <small>(HTML)</small></label><textarea class="form-input" rows="12" style="max-width:100%;font-family:ui-monospace,monospace;font-size:12px" [(ngModel)]="template.body" (ngModelChange)="tplDirty=true" *ngIf="template"></textarea></div>
-                <div class="picker">
+                <p class="hint"><span class="mini-chip" *ngIf="template?.isDefault">default</span><span class="mini-chip custom" *ngIf="template && !template.isDefault">customised</span> Build your email visually, drag in the variables, or click <strong>HTML</strong> to edit the source directly.</p>
+
+                <div class="form-row" *ngIf="template"><label>Subject</label>
+                    <input class="form-input" [(ngModel)]="template.subject" (ngModelChange)="tplDirty=true" (focus)="lastFocus='subject'" #subjectInput></div>
+
+                <div class="rte" *ngIf="template">
+                    <div class="rte-head">
+                        <div class="rte-toolbar" *ngIf="!htmlMode">
+                            <button type="button" class="rte-btn" title="Bold" (click)="exec('bold')"><b>B</b></button>
+                            <button type="button" class="rte-btn" title="Italic" (click)="exec('italic')"><i>i</i></button>
+                            <button type="button" class="rte-btn" title="Heading" (click)="exec('formatBlock','<h2>')">H</button>
+                            <button type="button" class="rte-btn" title="Bulleted list" (click)="exec('insertUnorderedList')">&#8226;</button>
+                            <button type="button" class="rte-btn" title="Link" (click)="addLink()">&#128279;</button>
+                            <button type="button" class="rte-btn" title="Insert review button" (click)="insertButton()">&#9733; Btn</button>
+                            <button type="button" class="rte-btn" title="Centre" (click)="exec('justifyCenter')">&#8801;</button>
+                            <button type="button" class="rte-btn" title="Left" (click)="exec('justifyLeft')">&#8676;</button>
+                        </div>
+                        <div class="rte-viewtoggle">
+                            <button type="button" class="rte-tab" [class.active]="!htmlMode" (click)="setHtmlMode(false)">Visual</button>
+                            <button type="button" class="rte-tab" [class.active]="htmlMode" (click)="setHtmlMode(true)">HTML</button>
+                        </div>
+                    </div>
+
+                    <div class="rte-vars">
+                        <span class="rte-varlabel">Drag or click to insert:</span>
+                        <span class="rte-chip" *ngFor="let v of emailVars" draggable="true" (dragstart)="onVarDrag($event, v.token)" (click)="insertVar(v.token)" [title]="v.token">{{ v.label }}</span>
+                    </div>
+
+                    <div class="rte-editor" *ngIf="!htmlMode" #emailEditor contenteditable="true"
+                         (input)="onEditorInput()" (blur)="onEditorInput()" (dragover)="$event.preventDefault()" (drop)="onEditorDrop($event)"></div>
+                    <textarea class="rte-source" *ngIf="htmlMode" [(ngModel)]="template.body" (ngModelChange)="tplDirty=true" rows="14" spellcheck="false"></textarea>
+                </div>
+
+                <div class="picker" style="margin-top:12px">
                     <button class="gbtn gbtn-primary gbtn-sm" (click)="saveTemplate()" [disabled]="!tplDirty">Save email</button>
                     <button class="gbtn gbtn-outline gbtn-sm" (click)="previewTemplate()">Preview</button>
                     <button class="gbtn gbtn-ghost gbtn-sm" (click)="resetTemplate()" [disabled]="template?.isDefault">Reset to default</button>
@@ -357,6 +387,22 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
         .mini-chip.custom { border-color:var(--gb-line-info); }
         .chip-x { display:inline-grid; place-items:center; min-width:22px; min-height:22px; border-radius:999px; background:none; border:0; cursor:pointer; font-size:15px; color:var(--gb-muted); }
         .chip-x:hover { color:var(--gb-danger-ink); background:var(--gb-tint-bad); }
+        .rte { border:1px solid var(--gb-line); border-radius:10px; overflow:hidden; }
+        .rte-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 8px; background:var(--gb-surface-2); border-bottom:1px solid var(--gb-line); flex-wrap:wrap; }
+        .rte-toolbar { display:flex; gap:2px; flex-wrap:wrap; }
+        .rte-btn { min-width:30px; height:30px; padding:0 8px; border:1px solid transparent; background:none; border-radius:6px; cursor:pointer; color:var(--gb-strong); font-size:14px; }
+        .rte-btn:hover { background:var(--gb-surface); border-color:var(--gb-line); }
+        .rte-viewtoggle { display:inline-flex; border:1px solid var(--gb-ui-border); border-radius:999px; overflow:hidden; }
+        .rte-tab { padding:4px 12px; border:0; background:none; cursor:pointer; font-size:11px; font-weight:700; color:var(--gb-muted); }
+        .rte-tab.active { background:var(--gb-amber); color:var(--gb-amber-ink); }
+        .rte-vars { display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:8px 10px; border-bottom:1px solid var(--gb-line-soft); background:var(--gb-surface); }
+        .rte-varlabel { font-size:11px; font-weight:700; color:var(--gb-muted); text-transform:uppercase; letter-spacing:.05em; }
+        .rte-chip { font-size:12px; font-weight:600; padding:3px 10px; border-radius:999px; background:var(--gb-tint-info); border:1px solid var(--gb-line-info); color:var(--gb-strong); cursor:grab; user-select:none; }
+        .rte-chip:hover { border-color:var(--gb-amber-edge); }
+        .rte-editor { min-height:240px; max-height:520px; overflow:auto; padding:16px 18px; background:#fff; color:#0f172a; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:1.6; outline:none; }
+        .rte-editor:focus { box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--gb-amber) 30%,transparent); }
+        .rte-editor h2 { font-size:18px; margin:0 0 8px; } .rte-editor a { color:#00b67a; }
+        .rte-source { width:100%; border:0; padding:14px 16px; background:var(--gb-surface); color:var(--gb-strong); font-family:ui-monospace,monospace; font-size:12px; line-height:1.5; outline:none; resize:vertical; }
         .tpl-preview { margin-top:14px; padding:16px 18px; border-radius:10px; border:1px dashed var(--gb-ui-border); background:#fff; color:#0f172a; font-size:13px; }
         .tpl-preview-subject { font-weight:700; margin-bottom:10px; padding-bottom:8px; border-bottom:1px solid var(--gb-line); }
         .save-bar { position:sticky; bottom:12px; z-index:5; display:flex; align-items:center; gap:10px; padding:12px 16px; border-radius:12px; background:var(--gb-surface); border:1px solid var(--gb-line); box-shadow:var(--gb-shadow-1); }
@@ -390,6 +436,19 @@ export class ReviewRequestsComponent implements OnInit {
     custQuery = ''; custResults: any[] = []; custSearching = false; private custTimer: any;
     template: any = null; tplDirty = false; preview: any = null;
     testEmail = ''; testing = false;
+    htmlMode = false;
+    lastFocus: 'body' | 'subject' = 'body';
+    @ViewChild('emailEditor') emailEditorRef?: ElementRef<HTMLElement>;
+    @ViewChild('subjectInput') subjectInputRef?: ElementRef<HTMLInputElement>;
+    emailVars = [
+        { token: '{{firstName}}', label: 'First name' },
+        { token: '{{orderCode}}', label: 'Order code' },
+        { token: '{{businessName}}', label: 'Business name' },
+        { token: '{{reviewButton}}', label: 'Review button' },
+        { token: '{{productList}}', label: 'Product list' },
+        { token: '{{ratingBlock}}', label: 'Star rating' },
+        { token: '{{reviewUrl}}', label: 'Review link' },
+    ];
     running = false; checking = false; checkMsg = '';
     advancedOpen = false; connecting = false; connectMsg = ''; connectOk = false;
     platform = 'trustpilot';
@@ -504,7 +563,51 @@ export class ReviewRequestsComponent implements OnInit {
         });
     }
 
-    loadTemplate() { if (!this.current) return; this.preview = null; this.tplDirty = false; this.http.get<any>(`/review-requests/template?channelId=${this.current.channelId}`).subscribe({ next: t => { this.template = t; this.cdr.markForCheck(); }, error: () => undefined }); }
+    // ── Rich email editor ───────────────────────────────────────────
+    private editorEl(): HTMLElement | null { return this.emailEditorRef?.nativeElement || null; }
+    private syncEditorFromModel() { const ed = this.editorEl(); if (ed && this.template) ed.innerHTML = this.template.body || ''; }
+    onEditorInput() { const ed = this.editorEl(); if (ed && this.template) { this.template.body = ed.innerHTML; this.tplDirty = true; } }
+    setHtmlMode(on: boolean) {
+        if (on === this.htmlMode) return;
+        if (!on) { this.htmlMode = false; setTimeout(() => this.syncEditorFromModel(), 0); }
+        else { this.onEditorInput(); this.htmlMode = true; }
+    }
+    exec(cmd: string, val?: string) { const ed = this.editorEl(); if (!ed) return; ed.focus(); try { document.execCommand(cmd, false, val); } catch {} this.onEditorInput(); }
+    addLink() { const url = prompt('Link URL (you can use a variable like {{reviewUrl}})', 'https://'); if (url) this.exec('createLink', url); }
+    insertButton() {
+        const ed = this.editorEl(); if (!ed) return; ed.focus();
+        const html = '<p style="text-align:center;margin:18px 0"><a href="{{reviewUrl}}" style="display:inline-block;background:#00b67a;color:#fff;text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:8px">&#9733; Leave a review</a></p>';
+        try { document.execCommand('insertHTML', false, html); } catch {}
+        this.onEditorInput();
+    }
+    onVarDrag(ev: DragEvent, token: string) { ev.dataTransfer?.setData('text/plain', token); }
+    onEditorDrop(ev: DragEvent) {
+        ev.preventDefault();
+        const token = ev.dataTransfer?.getData('text/plain') || ''; if (!token) return;
+        const ed = this.editorEl(); if (!ed) return;
+        const doc: any = document;
+        let range: Range | null = null;
+        if (doc.caretRangeFromPoint) range = doc.caretRangeFromPoint(ev.clientX, ev.clientY);
+        else if (doc.caretPositionFromPoint) { const p = doc.caretPositionFromPoint(ev.clientX, ev.clientY); if (p) { range = document.createRange(); range.setStart(p.offsetNode, p.offset); range.collapse(true); } }
+        if (range) { const sel = window.getSelection(); sel?.removeAllRanges(); sel?.addRange(range); }
+        ed.focus();
+        try { document.execCommand('insertText', false, token); } catch {}
+        this.onEditorInput();
+    }
+    insertVar(token: string) {
+        if (this.lastFocus === 'subject' && this.subjectInputRef && this.template) {
+            const el = this.subjectInputRef.nativeElement; const start = el.selectionStart ?? el.value.length; const end = el.selectionEnd ?? start;
+            this.template.subject = el.value.slice(0, start) + token + el.value.slice(end); this.tplDirty = true;
+            setTimeout(() => { el.focus(); const pos = start + token.length; el.setSelectionRange(pos, pos); }, 0);
+            return;
+        }
+        if (this.htmlMode && this.template) { this.template.body = (this.template.body || '') + token; this.tplDirty = true; return; }
+        const ed = this.editorEl(); if (!ed) return; ed.focus();
+        try { document.execCommand('insertText', false, token); } catch {}
+        this.onEditorInput();
+    }
+
+    loadTemplate() { if (!this.current) return; this.preview = null; this.tplDirty = false; this.htmlMode = false; this.http.get<any>(`/review-requests/template?channelId=${this.current.channelId}`).subscribe({ next: t => { this.template = t; this.cdr.markForCheck(); setTimeout(() => this.syncEditorFromModel(), 0); }, error: () => undefined }); }
     saveTemplate() { if (!this.current || !this.template) return; this.http.post('/review-requests/template', { channelId: this.current.channelId, subject: this.template.subject, body: this.template.body }).subscribe({ next: () => { this.tplDirty = false; this.notify.success('Email saved'); this.loadTemplate(); }, error: () => this.notify.error('Save failed') }); }
     resetTemplate() { if (!this.current) return; this.http.post('/review-requests/template', { channelId: this.current.channelId, reset: true }).subscribe({ next: () => { this.notify.success('Reset to default'); this.loadTemplate(); }, error: () => this.notify.error('Failed') }); }
     previewTemplate() { if (!this.current || !this.template) return; this.http.post<any>('/review-requests/template/preview', { channelId: this.current.channelId, subject: this.template.subject, body: this.template.body }).subscribe({ next: p => { this.preview = p; this.cdr.markForCheck(); }, error: () => this.notify.error('Preview failed') }); }
