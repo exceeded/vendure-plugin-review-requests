@@ -111,44 +111,58 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
         <!-- SETTINGS -->
         <ng-container *ngIf="!loading && current && tab==='settings'">
             <vdr-page-block><div class="card"><div class="card-block">
-                <h3 class="step-title">Timing</h3>
+                <h3 class="step-title">Connect Trustpilot</h3>
+                <p class="hint">Enter your Trustpilot domain and we'll build the review link. Add a free API key too and we'll pull in your live star rating automatically — nothing else to look up.</p>
+                <div class="form-grid">
+                    <div class="form-row"><label>Your Trustpilot domain</label>
+                        <input class="form-input" [(ngModel)]="current.trustpilotDomain" (ngModelChange)="markDirty()" placeholder="elite-software.co.uk"></div>
+                    <div class="form-row"><label>Free API key <small>(optional — for the star rating)</small></label>
+                        <input class="form-input mono" [(ngModel)]="current.trustpilotApiKey" (ngModelChange)="markDirty()" placeholder="paste key or leave blank">
+                        <div class="hint" style="margin-top:4px"><a href="https://developers.trustpilot.com/" target="_blank">Get a free key &#8594;</a></div></div>
+                </div>
+                <div class="picker">
+                    <button class="gbtn gbtn-primary gbtn-sm" (click)="connect()" [disabled]="connecting || !current.trustpilotDomain">{{ connecting ? 'Connecting…' : 'Connect Trustpilot' }}</button>
+                    <span class="hint inline" *ngIf="connectMsg" [style.color]="connectOk ? 'var(--gb-amber-edge)' : 'var(--gb-muted)'">{{ connectMsg }}</span>
+                </div>
+                <div *ngIf="rating" class="rating-box" style="margin-top:6px">
+                    <div class="stars"><span class="star" *ngFor="let s of [1,2,3,4,5]" [class.on]="s <= (rating.stars||0)">&#9733;</span></div>
+                    <div class="hint">TrustScore <strong>{{ rating.trustScore | number:'1.1-1' }}</strong> &middot; {{ rating.numberOfReviews | number }} reviews</div>
+                </div>
+            </div></div></vdr-page-block>
+
+            <vdr-page-block><div class="card"><div class="card-block">
+                <h3 class="step-title">The basics</h3>
+                <div class="form-grid">
+                    <div class="form-row"><label>Business name <small>(shown in the email)</small></label>
+                        <input class="form-input" [(ngModel)]="current.businessName" (ngModelChange)="markDirty()" placeholder="ELITE Software"></div>
+                    <div class="form-row"><label>Ask this many days after the order</label>
+                        <input class="form-input" type="number" min="0" [(ngModel)]="current.delayDays" (ngModelChange)="markDirty()"></div>
+                </div>
+                <p class="hint" style="margin-top:8px">That's the essentials — flip the switch on at the top and you're live. Everything else has sensible defaults.</p>
+            </div></div></vdr-page-block>
+
+            <vdr-page-block><div class="card"><div class="card-block">
+                <button class="gbtn gbtn-outline" (click)="advancedOpen = !advancedOpen" [attr.aria-expanded]="advancedOpen">{{ advancedOpen ? '&#9662; Hide advanced settings' : '&#9656; Advanced settings' }}</button>
+                <span class="hint inline" style="margin-left:10px">trigger state, minimum value, cooldown, throttle, review-link, reply-to</span>
+            </div></div></vdr-page-block>
+            <vdr-page-block *ngIf="advancedOpen"><div class="card"><div class="card-block">
                 <div class="form-grid">
                     <div class="form-row"><label>Send after order reaches</label>
                         <select class="form-input" [(ngModel)]="current.triggerState" (ngModelChange)="markDirty()">
-                            <option value="Delivered">Delivered</option><option value="PaymentSettled">Payment settled</option><option value="Shipped">Shipped</option>
-                        </select></div>
-                    <div class="form-row"><label>Wait this many days <small>(after the order date)</small></label>
-                        <input class="form-input" type="number" min="0" [(ngModel)]="current.delayDays" (ngModelChange)="markDirty()"></div>
-                    <div class="form-row"><label>Only orders over <small>(£, 0 = any)</small></label>
+                            <option value="Delivered">Delivered</option><option value="PaymentSettled">Payment settled</option><option value="Shipped">Shipped</option></select></div>
+                    <div class="form-row"><label>Only orders over <small>(&pound;, 0 = any)</small></label>
                         <input class="form-input" type="number" min="0" [ngModel]="current.minOrderValuePence/100" (ngModelChange)="current.minOrderValuePence=$event*100; markDirty()"></div>
-                    <div class="form-row"><label>Don't re-ask a customer within <small>(days)</small></label>
+                    <div class="form-row"><label>Don't re-ask within <small>(days)</small></label>
                         <input class="form-input" type="number" min="0" [(ngModel)]="current.cooldownDays" (ngModelChange)="markDirty()"></div>
-                    <div class="form-row"><label>Max per hourly run <small>(throttle)</small></label>
+                    <div class="form-row"><label>Max per hourly run</label>
                         <input class="form-input" type="number" min="1" [(ngModel)]="current.maxPerRun" (ngModelChange)="markDirty()"></div>
-                </div>
-            </div></div></vdr-page-block>
-            <vdr-page-block><div class="card"><div class="card-block">
-                <h3 class="step-title">Trustpilot</h3>
-                <p class="hint">Uses the <strong>free</strong> Trustpilot review page for the link, and (optionally) a free API key just to read your live rating. No paid Automatic Feedback Service.</p>
-                <div class="form-grid">
-                    <div class="form-row"><label>Business domain <small>(as on Trustpilot)</small></label>
-                        <input class="form-input" [(ngModel)]="current.trustpilotDomain" (ngModelChange)="markDirty()" placeholder="elite-software.co.uk"></div>
-                    <div class="form-row"><label>Business name <small>(shown in the email)</small></label>
-                        <input class="form-input" [(ngModel)]="current.businessName" (ngModelChange)="markDirty()" placeholder="ELITE Software"></div>
-                    <div class="form-row" style="grid-column:1/-1"><label>Review link template <small>(&#123;domain&#125; is filled in — or point at Google, etc.)</small></label>
-                        <input class="form-input mono" [(ngModel)]="current.reviewUrlTemplate" (ngModelChange)="markDirty()"></div>
                     <div class="form-row"><label>Reply-to <small>(optional)</small></label>
                         <input class="form-input" [(ngModel)]="current.replyTo" (ngModelChange)="markDirty()" placeholder="hello@yourstore.com"></div>
-                </div>
-                <h4 class="subsection-title">Live rating (optional)</h4>
-                <div class="form-grid">
-                    <div class="form-row"><label>Trustpilot API key <small>(free developer key)</small></label>
-                        <input class="form-input mono" [(ngModel)]="current.trustpilotApiKey" (ngModelChange)="markDirty()"></div>
-                    <div class="form-row"><label>Business unit ID <small>(optional — found from domain)</small></label>
+                    <div class="form-row" style="grid-column:1/-1"><label>Review link template <small>(&#123;domain&#125; is filled in &mdash; or point at Google, etc.)</small></label>
+                        <input class="form-input mono" [(ngModel)]="current.reviewUrlTemplate" (ngModelChange)="markDirty()"></div>
+                    <div class="form-row"><label>Business unit ID <small>(auto-filled by Connect)</small></label>
                         <input class="form-input mono" [(ngModel)]="current.trustpilotBusinessUnitId" (ngModelChange)="markDirty()"></div>
                 </div>
-                <div style="margin-top:10px"><button class="gbtn gbtn-outline gbtn-sm" (click)="checkRating()" [disabled]="checking">{{ checking ? 'Checking…' : 'Check rating + link' }}</button>
-                    <span class="hint inline" *ngIf="checkMsg" style="margin-left:10px">{{ checkMsg }}</span></div>
             </div></div></vdr-page-block>
         </ng-container>
 
@@ -336,6 +350,7 @@ export class ReviewRequestsComponent implements OnInit {
     template: any = null; tplDirty = false; preview: any = null;
     testEmail = ''; testing = false;
     running = false; checking = false; checkMsg = '';
+    advancedOpen = false; connecting = false; connectMsg = ''; connectOk = false;
 
     constructor(private http: HttpClient, private notify: NotificationService, private cdr: ChangeDetectorRef, private sanitizer: DomSanitizer) {}
 
@@ -390,6 +405,20 @@ export class ReviewRequestsComponent implements OnInit {
             error: err => { this.running = false; this.notify.error(err?.error?.message || 'Run failed'); },
         });
     }
+    connect() {
+        if (!this.current) return; this.connecting = true; this.connectMsg = ''; this.connectOk = false;
+        this.http.post<any>('/review-requests/trustpilot/detect', this.current).subscribe({
+            next: r => {
+                this.connecting = false; this.connectOk = r.ok && (!!r.rating || !!r.businessUnitId || !this.current!.trustpilotApiKey);
+                this.connectMsg = r.message;
+                if (r.businessUnitId && this.current) { this.current.trustpilotBusinessUnitId = r.businessUnitId; this.markDirty(); }
+                if (!this.current!.businessName && this.current) { /* leave for the user */ }
+                this.rating = r.rating || null; this.cdr.markForCheck();
+            },
+            error: () => { this.connecting = false; this.connectMsg = 'Connection failed — try again.'; },
+        });
+    }
+
     checkRating() {
         if (!this.current) return; this.checking = true; this.checkMsg = '';
         this.http.post<any>('/review-requests/trustpilot/check', this.current).subscribe({

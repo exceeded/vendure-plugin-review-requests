@@ -68,6 +68,12 @@ export class ReviewRequestController {
         return res.json({ ok: !!rating, rating, reviewUrl: buildReviewUrl(body.reviewUrlTemplate, body.trustpilotDomain) });
     }
 
+    @Post('trustpilot/detect')
+    async tpDetect(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: { trustpilotDomain: string; trustpilotApiKey: string; reviewUrlTemplate?: string }) {
+        if (denyUnlessAdmin(ctx, res, false)) return;
+        return res.json(await this.service.detect(body.trustpilotDomain || '', body.trustpilotApiKey || '', body.reviewUrlTemplate));
+    }
+
     // ── Admin: stats + activity ────────────────────────────────────────
     @Get('stats')
     async stats(@Ctx() ctx: RequestContext, @Res() res: Response, @Query('days') days?: string) {

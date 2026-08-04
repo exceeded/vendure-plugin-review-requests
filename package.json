@@ -1,6 +1,6 @@
 {
   "name": "@huloglobal/vendure-plugin-review-requests",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Automated post-purchase review invitations for Vendure, timed off order dates. Branded Trustpilot-style emails that link to your free Trustpilot review page (no paid Automatic Feedback Service required), with live star rating pulled from the free Trustpilot API, per-channel timing, customer exclusions, cooldown + dedup, opt-out, editable templates and a multi-tab admin dashboard.",
   "license": "AGPL-3.0-or-later",
   "author": "Wayne Garrison <wayne@garrison.me.uk>",
@@ -11,7 +11,15 @@
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "ui", "README.md", "CHANGELOG.md", "LICENSE", "logo.svg", "hulo-global-logo.svg"],
+  "files": [
+    "dist",
+    "ui",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "logo.svg",
+    "hulo-global-logo.svg"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepublishOnly": "yarn build",
@@ -38,5 +46,14 @@
     "typescript": "^5.3.0",
     "vitest": "^2.0.0"
   },
-  "keywords": ["vendure", "vendure-plugin", "trustpilot", "reviews", "review-request", "post-purchase", "email", "nps"]
+  "keywords": [
+    "vendure",
+    "vendure-plugin",
+    "trustpilot",
+    "reviews",
+    "review-request",
+    "post-purchase",
+    "email",
+    "nps"
+  ]
 }

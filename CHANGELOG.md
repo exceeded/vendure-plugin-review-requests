@@ -4,6 +4,20 @@ All notable changes to `@huloglobal/vendure-plugin-review-requests` are document
 here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-08-04
+
+### Changed
+- **Simpler setup.** The Settings tab now opens with a one-click
+  **Connect Trustpilot**: enter your domain (and an optional free API
+  key) and the plugin auto-detects your business-unit id and pulls your
+  live star rating — no manual lookups. Just a domain, a business name
+  and "days after order" are on the main screen; everything else moved
+  behind an Advanced toggle.
+
+### Added
+- `POST /review-requests/trustpilot/detect` — resolve review link +
+  business-unit id + live rating from a domain (+ key) in one call.
+
 ## [0.1.0] — 2026-08-04
 
 First release.

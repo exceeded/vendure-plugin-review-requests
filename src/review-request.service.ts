@@ -205,6 +205,26 @@ export class ReviewRequestService implements OnModuleInit {
         return rating;
     }
 
+    /** One-shot auto-detect: from a domain (+ optional free API key) resolve
+     *  the review link, the business-unit id and the live rating — so the
+     *  admin "Connect" button fills everything in without manual lookups. */
+    async detect(domain: string, apiKey: string, template?: string): Promise<{ ok: boolean; reviewUrl: string; businessUnitId: string; rating: TrustpilotRating | null; message: string }> {
+        const reviewUrl = buildReviewUrl(template || DEFAULT_CONFIG.reviewUrlTemplate, domain);
+        let businessUnitId = '';
+        let rating: TrustpilotRating | null = null;
+        if (domain && apiKey) {
+            businessUnitId = (await findBusinessUnitId(domain, apiKey)) || '';
+            if (businessUnitId) rating = await fetchRating(businessUnitId, apiKey);
+            this.ratingCache.delete(`${businessUnitId}|${domain}`);
+        }
+        const message = !domain ? 'Enter your Trustpilot domain first.'
+            : !apiKey ? 'Review link ready. Add a free API key to also show your star rating in emails.'
+            : rating ? `Connected — ${rating.trustScore.toFixed(1)}★ from ${rating.numberOfReviews.toLocaleString()} reviews.`
+            : businessUnitId ? 'Connected, but no rating yet (new business unit?).'
+            : 'Couldn\'t find that domain on Trustpilot — check the domain + API key.';
+        return { ok: !!reviewUrl, reviewUrl, businessUnitId, rating, message };
+    }
+
     // ── Compose + send one invitation ───────────────────────────────────
     private smtp() {
         if (this.options.smtp) return this.options.smtp;
