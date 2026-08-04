@@ -19,9 +19,8 @@ export const DEFAULT_TEMPLATE: Template = {
 <p style="margin:0 0 14px;line-height:1.6">Thanks again for your recent order <strong>{{orderCode}}</strong>. We hope everything arrived perfectly and you're happy with it.</p>
 <p style="margin:0 0 18px;line-height:1.6">Reviews genuinely help a small business like ours — and help other shoppers buy with confidence. If you have a spare minute, we'd love to hear how we did:</p>
 {{ratingBlock}}
-<p style="margin:0 0 22px;text-align:center">
-  <a href="{{reviewUrl}}" style="display:inline-block;background:#00b67a;color:#fff;text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:8px">★ Leave a review</a>
-</p>
+{{reviewButton}}
+{{productList}}
 <p style="margin:0 0 14px;line-height:1.6">It only takes a moment, and it means a lot. Thank you!</p>
 <p style="margin:0;line-height:1.6">— The {{businessName}} team</p>`,
 };

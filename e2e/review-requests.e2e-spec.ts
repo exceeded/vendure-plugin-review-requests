@@ -83,6 +83,32 @@ run('@huloglobal/vendure-plugin-review-requests (MariaDB)', () => {
         expect(composed!.subject).toContain('Sam');
     });
 
+    it('composes product-review links in product / both mode', async () => {
+        const base = await svc().getConfig(1);
+        // both mode + a product-review template → email lists sample products
+        const both = { ...base, reviewMode: 'both', productReviewUrlTemplate: 'https://shop.test/product/{slug}?review=1', trustpilotDomain: 'elite-software.co.uk' } as any;
+        const c1 = await svc().composeEmail(both, 'a@b.test', 'Sam', 'ORD1', 0);
+        expect(c1!.html).toContain('Review this');
+        expect(c1!.html).toContain('shop.test/product/sample-a?review=1');
+        expect(c1!.html).toContain('trustpilot.com/evaluate/elite-software.co.uk'); // service button too
+
+        // product-only mode → no service button
+        const prod = { ...both, reviewMode: 'product' } as any;
+        const c2 = await svc().composeEmail(prod, 'a@b.test', 'Sam', 'ORD1', 0);
+        expect(c2!.html).toContain('Review this');
+        expect(c2!.html).not.toContain('★ Leave a review');
+
+        // service-only (default) → no product list
+        const svcOnly = { ...both, reviewMode: 'service' } as any;
+        const c3 = await svc().composeEmail(svcOnly, 'a@b.test', 'Sam', 'ORD1', 0);
+        expect(c3!.html).not.toContain('Review this');
+    });
+
+    it('getOrderProducts returns an array (empty on the no-order fixture)', async () => {
+        expect(Array.isArray(await svc().getOrderProducts(999999))).toBe(true);
+        expect(await svc().getOrderProducts(0)).toEqual([]);
+    });
+
     it('dry-run eligibility returns a numeric summary (no orders in the fixture)', async () => {
         const cfg = await svc().getConfig(1);
         const res = await svc().runChannel(cfg, true);

@@ -117,11 +117,21 @@ export class ReviewRequestController {
         const cfg = await this.service.getConfig(Number(body.channelId || 1));
         const rating = await this.service.getRating(cfg);
         const businessName = cfg.businessName || cfg.trustpilotDomain || 'Your Store';
-        const ratingBlock = rating
+        const wantService = cfg.reviewMode === 'service' || cfg.reviewMode === 'both';
+        const wantProduct = cfg.reviewMode === 'product' || cfg.reviewMode === 'both';
+        const reviewUrl = buildReviewUrl(cfg.reviewUrlTemplate, cfg.trustpilotDomain);
+        const ratingBlock = (wantService && rating)
             ? `<div style="text-align:center;margin:0 0 18px">${renderStars(rating.stars)}<div style="font-size:13px;color:#475569;margin-top:6px">Rated <strong>${rating.trustScore.toFixed(1)}</strong> by ${rating.numberOfReviews.toLocaleString()} customers on ${this.service.platformName(cfg)}</div></div>`
             : '';
-        const vars = { firstName: 'Sam', orderCode: 'DEMO12345678', businessName,
-            reviewUrl: buildReviewUrl(cfg.reviewUrlTemplate, cfg.trustpilotDomain), ratingBlock, unsubscribeUrl: '#' };
+        const reviewButton = wantService
+            ? `<p style="margin:0 0 22px;text-align:center"><a href="${reviewUrl}" style="display:inline-block;background:#00b67a;color:#fff;text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:8px">★ Leave a review</a></p>`
+            : '';
+        let productList = '';
+        if (wantProduct && cfg.productReviewUrlTemplate) {
+            const sample = [{ name: 'Sample Product A', slug: 'sample-a' }, { name: 'Sample Product B', slug: 'sample-b' }];
+            productList = (this.service as any).renderProductList(sample, cfg.productReviewUrlTemplate, 'DEMO12345678');
+        }
+        const vars = { firstName: 'Sam', orderCode: 'DEMO12345678', businessName, reviewUrl, ratingBlock, reviewButton, productList, unsubscribeUrl: '#' };
         return res.json({
             subject: renderTemplate(body.subject || '', vars),
             html: wrapEmail(renderTemplate(body.body || '', vars), businessName, '#'),

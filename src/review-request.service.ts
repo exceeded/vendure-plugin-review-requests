@@ -43,6 +43,8 @@ export class ReviewRequestService implements OnModuleInit {
                 replyTo VARCHAR(190) NOT NULL DEFAULT '',
                 maxPerRun INT NOT NULL DEFAULT 200
             )`);
+        await this.db.query(`ALTER TABLE review_config ADD COLUMN IF NOT EXISTS reviewMode VARCHAR(12) NOT NULL DEFAULT 'service'`);
+        await this.db.query(`ALTER TABLE review_config ADD COLUMN IF NOT EXISTS productReviewUrlTemplate VARCHAR(400) NOT NULL DEFAULT ''`);
         await this.db.query(`
             CREATE TABLE IF NOT EXISTS review_template (
                 channelId INT PRIMARY KEY,
@@ -97,6 +99,8 @@ export class ReviewRequestService implements OnModuleInit {
             businessName: row.businessName || '',
             replyTo: row.replyTo || '',
             maxPerRun: row.maxPerRun ?? DEFAULT_CONFIG.maxPerRun,
+            reviewMode: (['service', 'product', 'both'].includes(row.reviewMode) ? row.reviewMode : 'service'),
+            productReviewUrlTemplate: row.productReviewUrlTemplate || '',
         };
     }
 
@@ -118,16 +122,19 @@ export class ReviewRequestService implements OnModuleInit {
     async saveConfig(c: ReviewChannelConfig): Promise<void> {
         await this.db.query(
             `INSERT INTO review_config (channelId, enabled, triggerState, delayDays, minOrderValuePence, cooldownDays,
-                trustpilotDomain, reviewUrlTemplate, trustpilotApiKey, trustpilotBusinessUnitId, businessName, replyTo, maxPerRun)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                trustpilotDomain, reviewUrlTemplate, trustpilotApiKey, trustpilotBusinessUnitId, businessName, replyTo, maxPerRun,
+                reviewMode, productReviewUrlTemplate)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE enabled=VALUES(enabled), triggerState=VALUES(triggerState), delayDays=VALUES(delayDays),
                 minOrderValuePence=VALUES(minOrderValuePence), cooldownDays=VALUES(cooldownDays),
                 trustpilotDomain=VALUES(trustpilotDomain), reviewUrlTemplate=VALUES(reviewUrlTemplate),
                 trustpilotApiKey=VALUES(trustpilotApiKey), trustpilotBusinessUnitId=VALUES(trustpilotBusinessUnitId),
-                businessName=VALUES(businessName), replyTo=VALUES(replyTo), maxPerRun=VALUES(maxPerRun)`,
+                businessName=VALUES(businessName), replyTo=VALUES(replyTo), maxPerRun=VALUES(maxPerRun),
+                reviewMode=VALUES(reviewMode), productReviewUrlTemplate=VALUES(productReviewUrlTemplate)`,
             [c.channelId, c.enabled ? 1 : 0, c.triggerState, c.delayDays, c.minOrderValuePence, c.cooldownDays,
              c.trustpilotDomain || '', c.reviewUrlTemplate || DEFAULT_CONFIG.reviewUrlTemplate, c.trustpilotApiKey || '',
-             c.trustpilotBusinessUnitId || '', c.businessName || '', c.replyTo || '', c.maxPerRun || 200],
+             c.trustpilotBusinessUnitId || '', c.businessName || '', c.replyTo || '', c.maxPerRun || 200,
+             c.reviewMode || 'service', c.productReviewUrlTemplate || ''],
         );
     }
 
@@ -314,18 +321,68 @@ export class ReviewRequestService implements OnModuleInit {
         return null;
     }
 
-    async composeEmail(cfg: ReviewChannelConfig, to: string, firstName: string, orderCode: string): Promise<{ subject: string; html: string } | null> {
+    /** Products on an order (name + slug), for product-review links. */
+    async getOrderProducts(orderId: number): Promise<Array<{ name: string; slug: string }>> {
+        if (!orderId) return [];
+        return this.db.query(
+            `SELECT DISTINCT pt.name, pt.slug
+             FROM order_line ol
+             JOIN product_variant pv ON pv.id = ol.productVariantId
+             JOIN product p ON p.id = pv.productId
+             JOIN product_translation pt ON pt.baseId = p.id AND pt.languageCode = 'en'
+             WHERE ol.orderId = ?
+             LIMIT 20`,
+            [orderId],
+        ).catch(() => []);
+    }
+
+    private productReviewUrl(template: string, slug: string, name: string, orderCode: string): string {
+        return String(template || '')
+            .replace(/\{slug\}/g, encodeURIComponent(slug || ''))
+            .replace(/\{name\}/g, encodeURIComponent(name || ''))
+            .replace(/\{orderCode\}/g, encodeURIComponent(orderCode || ''));
+    }
+
+    private renderProductList(products: Array<{ name: string; slug: string }>, template: string, orderCode: string): string {
+        if (!products.length || !template) return '';
+        const rows = products.map(p => {
+            const url = this.productReviewUrl(template, p.slug, p.name, orderCode);
+            return `<tr>
+                <td style="padding:8px 0;font-size:14px;color:#0f172a">${escapeHtml(p.name)}</td>
+                <td style="padding:8px 0;text-align:right"><a href="${url}" style="display:inline-block;background:#0f172a;color:#fff;text-decoration:none;font-weight:600;font-size:13px;padding:8px 16px;border-radius:6px">Review this</a></td>
+            </tr>`;
+        }).join('');
+        return `<div style="margin:0 0 22px">
+            <p style="text-align:center;font-weight:600;font-size:14px;margin:0 0 6px;color:#0f172a">Tell others about what you bought</p>
+            <table style="width:100%;border-collapse:collapse">${rows}</table>
+        </div>`;
+    }
+
+    async composeEmail(cfg: ReviewChannelConfig, to: string, firstName: string, orderCode: string, orderId = 0): Promise<{ subject: string; html: string } | null> {
         const tpl = await this.getTemplate(cfg.channelId);
         const reviewUrl = buildReviewUrl(cfg.reviewUrlTemplate, cfg.trustpilotDomain);
         const rating = await this.getRating(cfg);
         const businessName = cfg.businessName || cfg.trustpilotDomain || 'us';
-        const ratingBlock = rating
+        const wantService = cfg.reviewMode === 'service' || cfg.reviewMode === 'both';
+        const wantProduct = cfg.reviewMode === 'product' || cfg.reviewMode === 'both';
+
+        const ratingBlock = (wantService && rating)
             ? `<div style="text-align:center;margin:0 0 18px">${renderStars(rating.stars)}` +
               `<div style="font-size:13px;color:#475569;margin-top:6px">Rated <strong>${rating.trustScore.toFixed(1)}</strong> by ${rating.numberOfReviews.toLocaleString()} customers on ${this.platformName(cfg)}</div></div>`
             : '';
+        const reviewButton = wantService
+            ? `<p style="margin:0 0 22px;text-align:center"><a href="${reviewUrl}" style="display:inline-block;background:#00b67a;color:#fff;text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:8px">★ Leave a review</a></p>`
+            : '';
+        let productList = '';
+        if (wantProduct && cfg.productReviewUrlTemplate) {
+            const products = orderId ? await this.getOrderProducts(orderId)
+                : [{ name: 'Sample Product A', slug: 'sample-a' }, { name: 'Sample Product B', slug: 'sample-b' }];
+            productList = this.renderProductList(products, cfg.productReviewUrlTemplate, orderCode);
+        }
+
         const vars = {
             firstName: firstName || 'there', orderCode, businessName,
-            reviewUrl, ratingBlock,
+            reviewUrl, ratingBlock, reviewButton, productList,
             unsubscribeUrl: this.optOutUrl(to),
         };
         const subject = renderTemplate(tpl.subject, vars);
@@ -337,7 +394,7 @@ export class ReviewRequestService implements OnModuleInit {
     async sendInvitation(cfg: ReviewChannelConfig, order: { id: number; code: string; email: string; firstName: string }): Promise<{ ok: boolean; reason?: string }> {
         const smtp = this.smtp();
         if (!smtp) return { ok: false, reason: 'SMTP not configured' };
-        const composed = await this.composeEmail(cfg, order.email, order.firstName, order.code);
+        const composed = await this.composeEmail(cfg, order.email, order.firstName, order.code, order.id);
         if (!composed) return { ok: false, reason: 'compose failed' };
         try {
             const transporter = nodemailer.createTransport({

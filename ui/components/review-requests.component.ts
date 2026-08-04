@@ -10,6 +10,7 @@ interface ReviewConfig {
     trustpilotDomain: string; reviewUrlTemplate: string;
     trustpilotApiKey: string; trustpilotBusinessUnitId: string;
     businessName: string; replyTo: string; maxPerRun: number;
+    reviewMode: 'service' | 'product' | 'both'; productReviewUrlTemplate: string;
 }
 type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
 
@@ -145,6 +146,15 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
                         <input class="form-input" [(ngModel)]="current.businessName" (ngModelChange)="markDirty()" placeholder="ELITE Software"></div>
                     <div class="form-row"><label>Ask this many days after the order</label>
                         <input class="form-input" type="number" min="0" [(ngModel)]="current.delayDays" (ngModelChange)="markDirty()"></div>
+                    <div class="form-row"><label>What to ask for</label>
+                        <select class="form-input" [(ngModel)]="current.reviewMode" (ngModelChange)="markDirty()">
+                            <option value="service">A review of my store ({{ platform === 'google' ? 'Google' : 'Trustpilot' }})</option>
+                            <option value="product">Reviews of the products they bought</option>
+                            <option value="both">Both — store &amp; products</option>
+                        </select></div>
+                    <div class="form-row" *ngIf="current.reviewMode !== 'service'" style="grid-column:1/-1"><label>Product review link <small>(on your storefront — &#123;slug&#125;, &#123;name&#125; and &#123;orderCode&#125; are filled in)</small></label>
+                        <input class="form-input mono" [(ngModel)]="current.productReviewUrlTemplate" (ngModelChange)="markDirty()" placeholder="https://elite-software.co.uk/product/&#123;slug&#125;?review=1">
+                        <div class="hint" style="margin-top:4px">Each product on the order gets its own "Review this" button linking here. Point it at your product page's review form.</div></div>
                 </div>
                 <p class="hint" style="margin-top:8px">That's the essentials — flip the switch on at the top and you're live. Everything else has sensible defaults.</p>
             </div></div></vdr-page-block>
@@ -178,7 +188,7 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
         <ng-container *ngIf="!loading && current && tab==='email'">
             <vdr-page-block><div class="card"><div class="card-block">
                 <h3 class="step-title">Invitation email <small>({{ current.channelCode }})</small></h3>
-                <p class="hint">Variables: <code class="mono">&#123;&#123;firstName&#125;&#125;</code> <code class="mono">&#123;&#123;orderCode&#125;&#125;</code> <code class="mono">&#123;&#123;businessName&#125;&#125;</code> <code class="mono">&#123;&#123;reviewUrl&#125;&#125;</code> <code class="mono">&#123;&#123;ratingBlock&#125;&#125;</code> · <span class="mini-chip" *ngIf="template?.isDefault">default</span><span class="mini-chip custom" *ngIf="template && !template.isDefault">customised</span></p>
+                <p class="hint">Variables: <code class="mono">&#123;&#123;firstName&#125;&#125;</code> <code class="mono">&#123;&#123;orderCode&#125;&#125;</code> <code class="mono">&#123;&#123;businessName&#125;&#125;</code> <code class="mono">&#123;&#123;reviewButton&#125;&#125;</code> <code class="mono">&#123;&#123;productList&#125;&#125;</code> <code class="mono">&#123;&#123;ratingBlock&#125;&#125;</code> · <span class="mini-chip" *ngIf="template?.isDefault">default</span><span class="mini-chip custom" *ngIf="template && !template.isDefault">customised</span></p>
                 <div class="form-row"><label>Subject</label><input class="form-input" [(ngModel)]="template.subject" (ngModelChange)="tplDirty=true" *ngIf="template"></div>
                 <div class="form-row"><label>Body <small>(HTML)</small></label><textarea class="form-input" rows="12" style="max-width:100%;font-family:ui-monospace,monospace;font-size:12px" [(ngModel)]="template.body" (ngModelChange)="tplDirty=true" *ngIf="template"></textarea></div>
                 <div class="picker">

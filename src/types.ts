@@ -33,6 +33,12 @@ export interface ReviewChannelConfig {
     replyTo: string;
     /** Max invitations sent per cron run (safety throttle). */
     maxPerRun: number;
+    /** What the email asks for: a service/company review, product reviews,
+     *  or both. */
+    reviewMode: 'service' | 'product' | 'both';
+    /** Link template for on-site product reviews. Placeholders: {slug}
+     *  {name} {orderCode}. e.g. https://shop.example.com/product/{slug} */
+    productReviewUrlTemplate: string;
 }
 
 export const DEFAULT_CONFIG: Omit<ReviewChannelConfig, 'channelId' | 'channelCode'> = {
@@ -48,6 +54,8 @@ export const DEFAULT_CONFIG: Omit<ReviewChannelConfig, 'channelId' | 'channelCod
     businessName: '',
     replyTo: '',
     maxPerRun: 200,
+    reviewMode: 'service',
+    productReviewUrlTemplate: '',
 };
 
 export interface ReviewPluginOptions {

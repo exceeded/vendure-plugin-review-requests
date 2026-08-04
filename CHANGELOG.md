@@ -4,6 +4,16 @@ All notable changes to `@huloglobal/vendure-plugin-review-requests` are document
 here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-08-04
+
+### Added
+- **Product reviews.** A new "What to ask for" mode — Store review /
+  Product reviews / Both. In product (or both) mode the email lists the
+  actual products from the customer's order, each with its own "Review
+  this" button linking to your storefront's product-review page (a
+  configurable link template with {slug}, {name}, {orderCode}). Works
+  alongside the Trustpilot/Google store review. New template variables
+  {{reviewButton}} and {{productList}}.
 ## [0.4.0] — 2026-08-04
 
 ### Added
