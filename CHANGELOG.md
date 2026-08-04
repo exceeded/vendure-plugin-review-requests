@@ -4,6 +4,14 @@ All notable changes to `@huloglobal/vendure-plugin-review-requests` are document
 here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] — 2026-08-04
+
+### Fixed
+- Dark mode: the visual editor canvas now reads as an intentional white
+  "paper" (framed, with a visible caret + selection) instead of a bare
+  white block, and the email preview renders on white to match how the
+  email actually looks.
+
 ## [0.6.0] — 2026-08-04
 
 ### Added
