@@ -83,13 +83,13 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
             </vdr-page-block>
             <vdr-page-block>
                 <div class="card"><div class="card-block">
-                    <div class="row-between"><h3 class="step-title" style="margin:0">Your Trustpilot rating</h3>
+                    <div class="row-between"><h3 class="step-title" style="margin:0">Your review rating</h3>
                         <button class="gbtn gbtn-outline gbtn-sm" (click)="runNow()" [disabled]="running || (meta && !meta.licensed)">{{ running ? 'Sending…' : 'Send due now' }}</button></div>
                     <div *ngIf="rating" class="rating-box">
                         <div class="stars"><span class="star" *ngFor="let s of [1,2,3,4,5]" [class.on]="s <= (rating.stars||0)">★</span></div>
                         <div class="hint">TrustScore <strong>{{ rating.trustScore | number:'1.1-1' }}</strong> · {{ rating.numberOfReviews | number }} reviews</div>
                     </div>
-                    <p class="hint" *ngIf="!rating">Add your Trustpilot domain + free API key in Settings to show your live rating in emails (optional — emails work without it).</p>
+                    <p class="hint" *ngIf="!rating">Connect Trustpilot or Google in Settings to show your live star rating in emails (optional — emails work without it).</p>
                 </div></div>
             </vdr-page-block>
             <vdr-page-block>
@@ -124,12 +124,12 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
                     <div class="form-row"><label>{{ platformLabel() }}</label>
                         <input class="form-input" [(ngModel)]="current.trustpilotDomain" (ngModelChange)="markDirty()" [placeholder]="platformPlaceholder()">
                         <div class="hint" style="margin-top:4px">{{ platformHelp() }}</div></div>
-                    <div class="form-row" *ngIf="platform==='trustpilot'"><label>Free API key <small>(optional — for the star rating)</small></label>
+                    <div class="form-row" *ngIf="platform==='trustpilot' || platform==='google'"><label>{{ keyLabel() }} <small>(optional — for the star rating)</small></label>
                         <input class="form-input mono" [(ngModel)]="current.trustpilotApiKey" (ngModelChange)="markDirty()" placeholder="paste key or leave blank">
-                        <div class="hint" style="margin-top:4px"><a href="https://developers.trustpilot.com/" target="_blank">Get a free key &#8594;</a></div></div>
+                        <div class="hint" style="margin-top:4px"><a [href]="keyLink()" target="_blank">{{ keyLinkText() }} &#8594;</a></div></div>
                 </div>
                 <div class="picker">
-                    <button class="gbtn gbtn-primary gbtn-sm" (click)="connect()" [disabled]="connecting || !current.trustpilotDomain">{{ connecting ? 'Checking…' : (platform==='trustpilot' ? 'Connect Trustpilot' : 'Check link') }}</button>
+                    <button class="gbtn gbtn-primary gbtn-sm" (click)="connect()" [disabled]="connecting || !current.trustpilotDomain">{{ connecting ? 'Checking…' : (platform==='trustpilot' ? 'Connect Trustpilot' : platform==='google' ? 'Connect Google' : 'Check link') }}</button>
                     <span class="hint inline" *ngIf="connectMsg" [style.color]="connectOk ? 'var(--gb-amber-edge)' : 'var(--gb-muted)'">{{ connectMsg }}</span>
                 </div>
                 <div *ngIf="rating" class="rating-box" style="margin-top:6px">
@@ -427,8 +427,11 @@ export class ReviewRequestsComponent implements OnInit {
             : this.platform === 'custom' ? 'value for {domain}'
             : 'elite-software.co.uk';
     }
+    keyLabel(): string { return this.platform === 'google' ? 'Google Maps API key' : 'Trustpilot API key'; }
+    keyLink(): string { return this.platform === 'google' ? 'https://console.cloud.google.com/apis/library/places-backend.googleapis.com' : 'https://developers.trustpilot.com/'; }
+    keyLinkText(): string { return this.platform === 'google' ? 'Enable the Places API' : 'Get a free key'; }
     platformHelp(): string {
-        return this.platform === 'google' ? 'Find your Place ID at developers.google.com/maps/documentation/places/web-service/place-id — customers land straight on the "write a review" box.'
+        return this.platform === 'google' ? 'Find your Place ID at developers.google.com/maps/documentation/places/web-service/place-id. Add a Google Maps API key (Places API) below and we pull your live Google star rating too.'
             : this.platform === 'reviewsio' ? 'Your Reviews.io store ID from your Reviews.io dashboard.'
             : this.platform === 'custom' ? 'Edit the full link template under Advanced settings.'
             : 'Your domain exactly as it appears on Trustpilot.';

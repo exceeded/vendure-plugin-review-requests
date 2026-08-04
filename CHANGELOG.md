@@ -4,6 +4,14 @@ All notable changes to `@huloglobal/vendure-plugin-review-requests` are document
 here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-08-04
+
+### Added
+- **Google reviews live rating.** Pick Google in the platform selector,
+  add a Google Maps API key (Places API) + your Place ID, and Connect —
+  the email now shows your live Google star rating + review count, the
+  same way Trustpilot does. Both platforms cache for 6h and fail open.
+
 ## [0.3.0] — 2026-08-04
 
 ### Added

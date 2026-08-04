@@ -118,7 +118,7 @@ export class ReviewRequestController {
         const rating = await this.service.getRating(cfg);
         const businessName = cfg.businessName || cfg.trustpilotDomain || 'Your Store';
         const ratingBlock = rating
-            ? `<div style="text-align:center;margin:0 0 18px">${renderStars(rating.stars)}<div style="font-size:13px;color:#475569;margin-top:6px">Rated <strong>${rating.trustScore.toFixed(1)}</strong> by ${rating.numberOfReviews.toLocaleString()} customers on Trustpilot</div></div>`
+            ? `<div style="text-align:center;margin:0 0 18px">${renderStars(rating.stars)}<div style="font-size:13px;color:#475569;margin-top:6px">Rated <strong>${rating.trustScore.toFixed(1)}</strong> by ${rating.numberOfReviews.toLocaleString()} customers on ${this.service.platformName(cfg)}</div></div>`
             : '';
         const vars = { firstName: 'Sam', orderCode: 'DEMO12345678', businessName,
             reviewUrl: buildReviewUrl(cfg.reviewUrlTemplate, cfg.trustpilotDomain), ratingBlock, unsubscribeUrl: '#' };

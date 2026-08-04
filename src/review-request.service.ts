@@ -6,6 +6,7 @@ import * as nodemailer from 'nodemailer';
 import { DEFAULT_CONFIG, ReviewChannelConfig, ReviewPluginOptions, TriggerState } from './types';
 import { DEFAULT_TEMPLATE, Template, renderTemplate, wrapEmail, escapeHtml } from './templates';
 import { buildReviewUrl, fetchRating, findBusinessUnitId, renderStars, TrustpilotRating } from './trustpilot';
+import { fetchGoogleRating } from './google';
 
 const loggerCtx = 'ReviewRequests';
 
@@ -238,19 +239,38 @@ export class ReviewRequestService implements OnModuleInit {
         return true;
     }
 
-    // ── Trustpilot rating (cached in memory 6h) ─────────────────────────
+    // ── Review rating (Trustpilot or Google, cached in memory 6h) ───────
     private ratingCache = new Map<string, { rating: TrustpilotRating | null; at: number }>();
+
+    /** Which review platform a config targets, inferred from its link. */
+    platformOf(cfg: ReviewChannelConfig): 'trustpilot' | 'google' | 'other' {
+        const t = cfg.reviewUrlTemplate || '';
+        if (t.includes('google.com')) return 'google';
+        if (t.includes('trustpilot.com')) return 'trustpilot';
+        return 'other';
+    }
+    platformName(cfg: ReviewChannelConfig): string {
+        const p = this.platformOf(cfg);
+        return p === 'google' ? 'Google' : p === 'trustpilot' ? 'Trustpilot' : (cfg.businessName || 'us');
+    }
+
     async getRating(cfg: ReviewChannelConfig): Promise<TrustpilotRating | null> {
-        if (!cfg.trustpilotApiKey) return null;
-        let unitId = cfg.trustpilotBusinessUnitId;
-        const key = `${unitId}|${cfg.trustpilotDomain}`;
-        const hit = this.ratingCache.get(key);
+        const platform = this.platformOf(cfg);
+        if (!cfg.trustpilotApiKey || !cfg.trustpilotDomain) return null;
+        const cacheKey = `${platform}|${cfg.trustpilotDomain}|${cfg.trustpilotBusinessUnitId}`;
+        const hit = this.ratingCache.get(cacheKey);
         if (hit && Date.now() - hit.at < 6 * 3600_000) return hit.rating;
-        if (!unitId && cfg.trustpilotDomain) {
-            unitId = (await findBusinessUnitId(cfg.trustpilotDomain, cfg.trustpilotApiKey)) || '';
+
+        let rating: TrustpilotRating | null = null;
+        if (platform === 'google') {
+            // For Google the identifier field holds the Place ID.
+            rating = await fetchGoogleRating(cfg.trustpilotDomain, cfg.trustpilotApiKey);
+        } else if (platform === 'trustpilot') {
+            let unitId = cfg.trustpilotBusinessUnitId;
+            if (!unitId) unitId = (await findBusinessUnitId(cfg.trustpilotDomain, cfg.trustpilotApiKey)) || '';
+            rating = unitId ? await fetchRating(unitId, cfg.trustpilotApiKey) : null;
         }
-        const rating = unitId ? await fetchRating(unitId, cfg.trustpilotApiKey) : null;
-        this.ratingCache.set(key, { rating, at: Date.now() });
+        this.ratingCache.set(cacheKey, { rating, at: Date.now() });
         return rating;
     }
 
@@ -258,19 +278,26 @@ export class ReviewRequestService implements OnModuleInit {
      *  the review link, the business-unit id and the live rating — so the
      *  admin "Connect" button fills everything in without manual lookups. */
     async detect(domain: string, apiKey: string, template?: string): Promise<{ ok: boolean; reviewUrl: string; businessUnitId: string; rating: TrustpilotRating | null; message: string }> {
-        const reviewUrl = buildReviewUrl(template || DEFAULT_CONFIG.reviewUrlTemplate, domain);
+        const tpl = template || DEFAULT_CONFIG.reviewUrlTemplate;
+        const reviewUrl = buildReviewUrl(tpl, domain);
+        const isGoogle = tpl.includes('google.com');
+        const isTrustpilot = tpl.includes('trustpilot.com');
         let businessUnitId = '';
         let rating: TrustpilotRating | null = null;
-        if (domain && apiKey) {
+        if (domain && apiKey && isGoogle) {
+            rating = await fetchGoogleRating(domain, apiKey);
+            this.ratingCache.delete(`google|${domain}|`);
+        } else if (domain && apiKey && isTrustpilot) {
             businessUnitId = (await findBusinessUnitId(domain, apiKey)) || '';
             if (businessUnitId) rating = await fetchRating(businessUnitId, apiKey);
-            this.ratingCache.delete(`${businessUnitId}|${domain}`);
+            this.ratingCache.delete(`trustpilot|${domain}|${businessUnitId}`);
         }
-        const message = !domain ? 'Enter your Trustpilot domain first.'
-            : !apiKey ? 'Review link ready. Add a free API key to also show your star rating in emails.'
+        const platformLabel = isGoogle ? 'Google Place ID' : isTrustpilot ? 'Trustpilot domain' : 'identifier';
+        const message = !domain ? `Enter your ${platformLabel} first.`
+            : !apiKey ? 'Review link ready. Add an API key to also show your star rating in emails.'
             : rating ? `Connected — ${rating.trustScore.toFixed(1)}★ from ${rating.numberOfReviews.toLocaleString()} reviews.`
-            : businessUnitId ? 'Connected, but no rating yet (new business unit?).'
-            : 'Couldn\'t find that domain on Trustpilot — check the domain + API key.';
+            : (isGoogle || isTrustpilot) ? `Couldn't read a rating — check the ${platformLabel} + API key.`
+            : 'Review link ready (this platform has no live-rating lookup).';
         return { ok: !!reviewUrl, reviewUrl, businessUnitId, rating, message };
     }
 
@@ -294,7 +321,7 @@ export class ReviewRequestService implements OnModuleInit {
         const businessName = cfg.businessName || cfg.trustpilotDomain || 'us';
         const ratingBlock = rating
             ? `<div style="text-align:center;margin:0 0 18px">${renderStars(rating.stars)}` +
-              `<div style="font-size:13px;color:#475569;margin-top:6px">Rated <strong>${rating.trustScore.toFixed(1)}</strong> by ${rating.numberOfReviews.toLocaleString()} customers on Trustpilot</div></div>`
+              `<div style="font-size:13px;color:#475569;margin-top:6px">Rated <strong>${rating.trustScore.toFixed(1)}</strong> by ${rating.numberOfReviews.toLocaleString()} customers on ${this.platformName(cfg)}</div></div>`
             : '';
         const vars = {
             firstName: firstName || 'there', orderCode, businessName,
