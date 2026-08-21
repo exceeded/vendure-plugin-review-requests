@@ -40,8 +40,26 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
         </vdr-page-block>
 
         <vdr-page-block *ngIf="meta && !meta.licensed">
-            <div class="update-banner major">
-                <div><strong>🔓 Free tier</strong> — configure, preview and test-send are active. Scheduled sending needs a licence.</div>
+            <div class="update-banner major" *ngIf="meta.tier === 'trial'">
+                <div>
+                    <strong>⏳ Full-featured evaluation</strong> —
+                    <ng-container *ngIf="meta.eval?.daysRemaining != null; else evalNoClock">
+                        <strong>{{ meta.eval.daysRemaining }} day{{ meta.eval.daysRemaining === 1 ? '' : 's' }} left</strong> with everything enabled, scheduled sending included.
+                    </ng-container>
+                    <ng-template #evalNoClock>everything is enabled, scheduled sending included.</ng-template>
+                    Afterwards the plugin drops to the free tier (configure, preview + test-send).
+                </div>
+                <div class="actions eval-actions">
+                    <ng-container *ngIf="!remindMeSent">
+                        <input class="eval-email" type="email" placeholder="you@company.com" [(ngModel)]="remindEmail" [disabled]="remindMeSending">
+                        <button class="gbtn gbtn-outline gbtn-sm" (click)="sendRemindMe()" [disabled]="remindMeSending || !remindEmail">{{ remindMeSending ? 'Saving…' : 'Email me before it ends' }}</button>
+                    </ng-container>
+                    <span *ngIf="remindMeSent" class="eval-ok">✓ We'll email you before it ends</span>
+                    <a href="https://huloglobal.com/vendure-plugins/review-requests/" target="_blank" class="gbtn gbtn-primary gbtn-sm">Keep it — get a licence ↗</a>
+                </div>
+            </div>
+            <div class="update-banner major" *ngIf="meta.tier !== 'trial'">
+                <div><strong>🔓 Free tier</strong> — your evaluation has ended. Configure, preview and test-send stay active; scheduled sending needs a licence. Your setup is saved and reactivates instantly with a key.</div>
                 <div class="actions"><a href="https://huloglobal.com/vendure-plugins/review-requests/" target="_blank" class="gbtn gbtn-primary gbtn-sm">Get a licence ↗</a></div>
             </div>
         </vdr-page-block>
@@ -452,11 +470,17 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
         .cust-info strong { font-size:13px; } .cust-info .hint { margin:0; }
         .update-banner { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; padding:12px 16px; border-radius:10px; font-size:13px; background:var(--gb-tint-warn); border:1px solid var(--gb-line-warn); }
         .update-banner .actions { display:flex; gap:6px; }
+        .eval-actions { align-items:center; }
+        .eval-email { padding:5px 9px; border:1px solid var(--gb-ui-border); border-radius:7px; font-size:12.5px; min-width:190px; background:#fff; color:#0f172a; }
+        .eval-ok { font-size:12.5px; color:var(--gb-strong); font-weight:600; }
     `],
 })
 export class ReviewRequestsComponent implements OnInit {
     loading = true;
     meta: any = null;
+    remindEmail = '';
+    remindMeSending = false;
+    remindMeSent = false;
     configs: ReviewConfig[] = [];
     currentIdx = 0;
     dirty = false; saving = false;
@@ -495,6 +519,16 @@ export class ReviewRequestsComponent implements OnInit {
     ngOnInit() {
         this.reloadAll();
         this.http.get<any>('/review-requests/meta').subscribe({ next: m => { this.meta = m; this.cdr.markForCheck(); }, error: () => undefined });
+    }
+
+    sendRemindMe() {
+        const email = (this.remindEmail || '').trim();
+        if (!email) return;
+        this.remindMeSending = true;
+        this.http.post<any>('/review-requests/eval/remind-me', { email }).subscribe({
+            next: () => { this.remindMeSending = false; this.remindMeSent = true; this.notify.success('Reminder set — check your inbox for a confirmation'); this.cdr.markForCheck(); },
+            error: () => { this.remindMeSending = false; this.notify.error('Could not save the reminder — try again shortly'); this.cdr.markForCheck(); },
+        });
     }
 
     reloadAll() {

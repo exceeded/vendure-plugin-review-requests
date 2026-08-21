@@ -43,7 +43,33 @@ export class ReviewRequestController {
             update: updater ? updater.getStatus() : null,
             licensed: !!licence?.valid,
             licenceMessage: licence?.valid ? '' : (licence?.message || 'No licence key configured'),
+            tier: licence?.valid ? 'paid' : (ReviewRequestPlugin.getEvalState()?.active ? 'trial' : 'free'),
+            eval: ReviewRequestPlugin.getEvalState(),
         });
+    }
+
+    /** Admin opt-in: "email me before my evaluation ends". Proxied
+     *  server-to-server to the HULO licence server, which sends a
+     *  welcome email and runs the reminder drip. Explicit consent only —
+     *  nothing is sent anywhere unless the admin submits an address. */
+    @Post('eval/remind-me')
+    async evalRemindMe(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
+        if (denyUnlessAdmin(ctx, res, true)) return;
+        const email = String(body?.email || '').trim();
+        const instanceId = ReviewRequestPlugin.getEvalInstanceId();
+        if (!email || !instanceId) return res.status(400).json({ error: 'bad-request' });
+        try {
+            const base = (process.env.HULO_LICENCE_EVAL_URL || 'https://elite.charity/licence/eval/register').replace(/\/register$/, '');
+            const resp = await fetch(`${base}/lead`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ plugin: ReviewRequestPlugin.getPackageName(), instanceId, email }),
+            });
+            if (!resp.ok) return res.status(502).json({ error: 'upstream', status: resp.status });
+            return res.json({ ok: true });
+        } catch {
+            return res.status(502).json({ error: 'unreachable' });
+        }
     }
 
     // ── Admin: config ──────────────────────────────────────────────────
@@ -92,8 +118,8 @@ export class ReviewRequestController {
     @Post('run')
     async run(@Ctx() ctx: RequestContext, @Res() res: Response) {
         if (denyUnlessAdmin(ctx, res, true)) return;
-        if (!ReviewRequestPlugin.isLicensed()) {
-            return res.status(402).json({ error: 'licence_required', message: 'Sending review requests requires a licence.' });
+        if (!ReviewRequestPlugin.hasPremiumAccess()) {
+            return res.status(402).json({ error: 'licence_required', message: 'Your evaluation has ended — sending review requests now requires a licence.' });
         }
         return res.json({ ok: true, results: await this.service.runAll(false) });
     }

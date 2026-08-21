@@ -1,7 +1,7 @@
 import { PluginCommonModule, Type, VendurePlugin } from '@vendure/core';
 import {
     fingerprintPublicKey, Heartbeat, LicenceStatus, RevocationChecker, UpdateChecker,
-    verifyLicence, warnIfIncompatibleVendure,
+    verifyLicence, warnIfIncompatibleVendure, EvaluationClient, EvaluationState,
 } from '@huloglobal/vendure-licence-sdk';
 
 import { ReviewRequestService } from './review-request.service';
@@ -56,15 +56,29 @@ export class ReviewRequestPlugin {
     private static updateChecker: UpdateChecker | null = null;
     private static heartbeat: Heartbeat | null = null;
     private static licenceStatus: LicenceStatus | null = null;
+    private static evalClient: EvaluationClient | null = null;
 
     static getUpdateChecker() { return ReviewRequestPlugin.updateChecker; }
     static getPackageVersion() { return PKG_VERSION; }
     static getPackageName() { return PKG_NAME; }
     static getLicenceStatus() { return ReviewRequestPlugin.licenceStatus; }
     static isLicensed(): boolean { return !!ReviewRequestPlugin.licenceStatus?.valid; }
+    static getEvalState(): EvaluationState | null { return ReviewRequestPlugin.evalClient?.getState() ?? null; }
+    static getEvalInstanceId(): string | null { return ReviewRequestPlugin.evalClient?.getInstanceId() ?? null; }
+    /** Licensed installs AND installs inside the 14-day server-anchored
+     *  evaluation window get the full feature set. */
+    static hasPremiumAccess(): boolean {
+        if (ReviewRequestPlugin.licenceStatus?.valid) return true;
+        const ev = ReviewRequestPlugin.evalClient?.getState();
+        return !!ev?.active;
+    }
 
     constructor(private service: ReviewRequestService) {
         this.service.setOptions(cachedOptions);
+        // Anonymous aggregates for the (opt-in) evaluation reminder emails —
+        // "you sent N invitations during your trial" converts far better
+        // than generic copy. Numbers only, never personal data.
+        ReviewRequestPlugin.evalClient?.setStatsProvider(() => this.service.evalStats());
     }
 
     static init(options: ReviewPluginInitOptions = {}): Type<ReviewRequestPlugin> {
@@ -80,8 +94,16 @@ export class ReviewRequestPlugin {
             publicKey: HULO_PUBLIC_KEY, revokedIds: ReviewRequestPlugin.revocation.getRevokedIds(),
         });
         if (!ReviewRequestPlugin.licenceStatus.valid) {
+            // Unlicensed: start the server-anchored 14-day full-featured
+            // evaluation. All premium paths stay enabled while it runs;
+            // when it ends the plugin drops to the free tier (configure,
+            // preview + test-send only).
+            if (!ReviewRequestPlugin.evalClient) {
+                ReviewRequestPlugin.evalClient = new EvaluationClient({ packageName: PKG_NAME, packageVersion: PKG_VERSION });
+                ReviewRequestPlugin.evalClient.start();
+            }
             // eslint-disable-next-line no-console
-            console.warn(`[${PKG_NAME}] ${ReviewRequestPlugin.licenceStatus.message} — FREE tier: configure, preview + test-send only. Scheduled sending requires a licence: https://huloglobal.com/vendure-plugins/review-requests/`);
+            console.warn(`[${PKG_NAME}] ${ReviewRequestPlugin.licenceStatus.message} — running the 14-day FULL-FEATURED evaluation; afterwards the plugin drops to the free tier (configure, preview + test-send only). Keep it: https://huloglobal.com/vendure-plugins/review-requests/`);
         }
         if (!ReviewRequestPlugin.heartbeat) {
             ReviewRequestPlugin.heartbeat = new Heartbeat({

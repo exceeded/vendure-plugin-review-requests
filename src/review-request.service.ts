@@ -20,6 +20,12 @@ export class ReviewRequestService implements OnModuleInit {
 
     private get db() { return this.connection.rawConnection; }
 
+    /** Anonymous usage aggregates for the evaluation drip (numbers only). */
+    async evalStats(): Promise<Record<string, number>> {
+        const [row] = await this.db.query(`SELECT COUNT(*) AS n FROM review_log WHERE status = 'sent'`);
+        return { invitesSent: Number(row?.n || 0) };
+    }
+
     async onModuleInit() {
         try { await this.ensureSchema(); }
         catch (e: any) { Logger.error(`Schema init failed: ${e.message}`, loggerCtx); }

@@ -10,12 +10,13 @@ const loggerCtx = 'ReviewRequests';
 export class ReviewCrons {
     constructor(private service: ReviewRequestService, private processContext: ProcessContext) {}
 
-    /** Hourly eligibility scan + send. Worker only; licensed installs only. */
+    /** Hourly eligibility scan + send. Worker only; runs for licensed
+     *  installs and installs inside the evaluation window. */
     @Cron(CronExpression.EVERY_HOUR)
     async sendDueInvitations() {
         if (this.processContext.isServer) return;
         if (getOptions().disableCron) return;
-        if (!ReviewRequestPlugin.isLicensed()) return;
+        if (!ReviewRequestPlugin.hasPremiumAccess()) return;
         const results = await this.service.runAll(false);
         const sent = results.reduce((n, r) => n + (r.sent || 0), 0);
         if (sent > 0) {
