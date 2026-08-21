@@ -73,12 +73,57 @@ export class ReviewRequestPlugin {
         return !!ev?.active;
     }
 
+    private static licenceHost = '';
+
+    /** Verify + apply a licence key at runtime (admin-UI activation).
+     *  Identical checks to boot-time verification: signature, pluginId,
+     *  domain binding, expiry, revocation list. Only applied when valid. */
+    static activateRuntimeLicence(key: string): LicenceStatus {
+        const status = verifyLicence({
+            licenceKey: key, pluginId: PLUGIN_ID, host: ReviewRequestPlugin.licenceHost,
+            publicKey: HULO_PUBLIC_KEY, revokedIds: ReviewRequestPlugin.revocation?.getRevokedIds(),
+        });
+        if (status.valid) {
+            ReviewRequestPlugin.licenceStatus = status;
+            ReviewRequestPlugin.evalClient?.stop();
+        }
+        return status;
+    }
+
+    /** Drop an admin-activated key at runtime: back to unlicensed state
+     *  (an env/init key, if any, is re-verified by the caller flow) and
+     *  the evaluation clock resumes from wherever the server says it is. */
+    static deactivateRuntimeLicence(): void {
+        ReviewRequestPlugin.licenceStatus = {
+            valid: false,
+            message: 'No licence key configured. The plugin will run in unlicensed (degraded) mode.',
+        } as LicenceStatus;
+        if (ReviewRequestPlugin.evalClient) {
+            ReviewRequestPlugin.evalClient.start();
+        } else {
+            ReviewRequestPlugin.evalClient = new EvaluationClient({ packageName: PKG_NAME, packageVersion: PKG_VERSION });
+            ReviewRequestPlugin.evalClient.start();
+        }
+    }
+
     constructor(private service: ReviewRequestService) {
         this.service.setOptions(cachedOptions);
         // Anonymous aggregates for the (opt-in) evaluation reminder emails —
         // "you sent N invitations during your trial" converts far better
         // than generic copy. Numbers only, never personal data.
         ReviewRequestPlugin.evalClient?.setStatsProvider(() => this.service.evalStats());
+    }
+
+    /** Apply an admin-activated licence key persisted in the DB. Runs
+     *  after DI is up; an explicitly configured env/init key wins. */
+    async onApplicationBootstrap() {
+        if (ReviewRequestPlugin.isLicensed()) return;
+        const stored = await this.service.loadStoredLicenceKey();
+        if (stored) {
+            const st = ReviewRequestPlugin.activateRuntimeLicence(stored);
+            // eslint-disable-next-line no-console
+            if (st.valid) console.log(`[${PKG_NAME}] licence restored from admin activation — ${st.message}`);
+        }
     }
 
     static init(options: ReviewPluginInitOptions = {}): Type<ReviewRequestPlugin> {
@@ -89,6 +134,7 @@ export class ReviewRequestPlugin {
         if (!ReviewRequestPlugin.updateChecker) { ReviewRequestPlugin.updateChecker = new UpdateChecker(PKG_NAME, PKG_VERSION); ReviewRequestPlugin.updateChecker.start(); }
 
         const host = (options.publicBaseUrl || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+        ReviewRequestPlugin.licenceHost = host;
         ReviewRequestPlugin.licenceStatus = verifyLicence({
             licenceKey: options.licenceKey, pluginId: PLUGIN_ID, host,
             publicKey: HULO_PUBLIC_KEY, revokedIds: ReviewRequestPlugin.revocation.getRevokedIds(),

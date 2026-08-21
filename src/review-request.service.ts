@@ -1,3 +1,4 @@
+import { LicenceStore } from '@huloglobal/vendure-licence-sdk';
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Logger, TransactionalConnection } from '@vendure/core';
 import { createHmac } from 'crypto';
@@ -19,6 +20,22 @@ export class ReviewRequestService implements OnModuleInit {
     constructor(private connection: TransactionalConnection) {}
 
     private get db() { return this.connection.rawConnection; }
+
+    private licenceStore = new LicenceStore((sql, params) => this.db.query(sql, params));
+
+    async loadStoredLicenceKey(): Promise<string | null> {
+        await this.licenceStore.ensureTable();
+        return this.licenceStore.load('vendure-plugin-review-requests');
+    }
+
+    async saveStoredLicenceKey(key: string): Promise<void> {
+        await this.licenceStore.ensureTable();
+        await this.licenceStore.save('vendure-plugin-review-requests', key);
+    }
+
+    async clearStoredLicenceKey(): Promise<void> {
+        await this.licenceStore.clear('vendure-plugin-review-requests');
+    }
 
     /** Anonymous usage aggregates for the evaluation drip (numbers only). */
     async evalStats(): Promise<Record<string, number>> {

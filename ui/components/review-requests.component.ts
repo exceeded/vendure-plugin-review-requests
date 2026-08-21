@@ -62,6 +62,13 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
                 <div><strong>🔓 Free tier</strong> — your evaluation has ended. Configure, preview and test-send stay active; scheduled sending needs a licence. Your setup is saved and reactivates instantly with a key.</div>
                 <div class="actions"><a href="https://huloglobal.com/vendure-plugins/review-requests/" target="_blank" class="gbtn gbtn-primary gbtn-sm">Get a licence ↗</a></div>
             </div>
+            <div class="update-banner" style="margin-top:8px">
+                <div><strong>🔑 Already have a licence key?</strong> Paste it from your purchase email to activate instantly — no .env edit, no redeploy.</div>
+                <div class="actions eval-actions">
+                    <input class="eval-email" style="min-width:280px" type="text" placeholder="eyJhbGciOi…" [(ngModel)]="licenceKeyInput" [disabled]="activating">
+                    <button class="gbtn gbtn-primary gbtn-sm" (click)="activateLicence()" [disabled]="activating || !licenceKeyInput">{{ activating ? 'Verifying…' : 'Activate' }}</button>
+                </div>
+            </div>
         </vdr-page-block>
 
         <vdr-page-block *ngIf="!loading && current">
@@ -481,6 +488,8 @@ export class ReviewRequestsComponent implements OnInit {
     remindEmail = '';
     remindMeSending = false;
     remindMeSent = false;
+    licenceKeyInput = '';
+    activating = false;
     configs: ReviewConfig[] = [];
     currentIdx = 0;
     dirty = false; saving = false;
@@ -528,6 +537,26 @@ export class ReviewRequestsComponent implements OnInit {
         this.http.post<any>('/review-requests/eval/remind-me', { email }).subscribe({
             next: () => { this.remindMeSending = false; this.remindMeSent = true; this.notify.success('Reminder set — check your inbox for a confirmation'); this.cdr.markForCheck(); },
             error: () => { this.remindMeSending = false; this.notify.error('Could not save the reminder — try again shortly'); this.cdr.markForCheck(); },
+        });
+    }
+
+    activateLicence() {
+        const key = (this.licenceKeyInput || '').trim();
+        if (!key) return;
+        this.activating = true;
+        this.http.post<any>('/review-requests/licence/activate', { key }).subscribe({
+            next: (r) => {
+                this.activating = false;
+                this.licenceKeyInput = '';
+                this.notify.success(r?.message || 'Licence activated — all features enabled');
+                this.http.get<any>('/review-requests/meta').subscribe({ next: m => { this.meta = m; this.cdr.markForCheck(); }, error: () => undefined });
+                this.cdr.markForCheck();
+            },
+            error: (e) => {
+                this.activating = false;
+                this.notify.error(e?.error?.message || 'That key did not validate — check it was copied completely');
+                this.cdr.markForCheck();
+            },
         });
     }
 
