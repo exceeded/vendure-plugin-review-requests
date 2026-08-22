@@ -513,6 +513,52 @@ export class ReviewRequestService implements OnModuleInit {
         return results;
     }
 
+    /** Per-order invitation state for the admin order-detail panel. */
+    async orderReviewStatus(orderId: number): Promise<any> {
+        const [order] = await this.db.query(
+            `SELECT o.id, o.code, o.state, o.channelId, c.emailAddress AS email, c.firstName
+             FROM \`order\` o JOIN customer c ON c.id = o.customerId WHERE o.id = ? LIMIT 1`, [orderId]).catch(() => []);
+        if (!order) return { found: false };
+        const email = String(order.email || '').toLowerCase();
+        const history = await this.db.query(
+            `SELECT status, reason, createdAt FROM review_log WHERE orderId = ? ORDER BY createdAt DESC LIMIT 10`, [orderId]).catch(() => []);
+        const [opt] = email ? await this.db.query(`SELECT email FROM review_optout WHERE email = ? LIMIT 1`, [email]).catch(() => []) : [];
+        return {
+            found: true,
+            orderCode: order.code,
+            email,
+            sent: history.some((r: any) => r.status === 'sent'),
+            optedOut: !!opt,
+            excluded: email ? await this.isExcluded(email) : false,
+            history,
+        };
+    }
+
+    /** Manual send from the admin order page. Opt-outs are ALWAYS
+     *  honoured; `force` re-sends an already-invited order and overrides
+     *  exclusions (an explicit staff decision). */
+    async sendForOrder(orderId: number, force = false): Promise<{ ok: boolean; reason?: string }> {
+        const [o] = await this.db.query(
+            `SELECT o.id, o.code, o.channelId, c.emailAddress AS email, c.firstName
+             FROM \`order\` o JOIN customer c ON c.id = o.customerId WHERE o.id = ? LIMIT 1`, [orderId]).catch(() => []);
+        if (!o) return { ok: false, reason: 'Order not found' };
+        const email = String(o.email || '').toLowerCase();
+        if (!email) return { ok: false, reason: 'Order has no customer email' };
+        const [opt] = await this.db.query(`SELECT email FROM review_optout WHERE email = ? LIMIT 1`, [email]).catch(() => []);
+        if (opt) return { ok: false, reason: 'Customer has opted out of review emails' };
+        if (!force) {
+            const [prior] = await this.db.query(`SELECT id FROM review_log WHERE orderId = ? AND status = 'sent' LIMIT 1`, [o.id]);
+            if (prior) return { ok: false, reason: 'Already sent for this order — use Resend to send again' };
+            if (await this.isExcluded(email)) return { ok: false, reason: 'Customer/domain is excluded — use Resend to override' };
+        }
+        const cfg = await this.getConfig(o.channelId);
+        if (!cfg) return { ok: false, reason: 'No review configuration for this channel' };
+        const reviewUrl = buildReviewUrl(cfg.reviewUrlTemplate, cfg.trustpilotDomain);
+        const res = await this.sendInvitation(cfg, { id: o.id, code: o.code, email, firstName: o.firstName });
+        await this.logSend(o.id, o.code, cfg.channelId, email, res.ok ? 'sent' : 'failed', res.ok ? 'manual' : (res.reason || 'send failed'), reviewUrl);
+        return res;
+    }
+
     // ── Stats + log for the admin ───────────────────────────────────────
     async stats(days = 30): Promise<any> {
         const d = Math.max(1, Math.min(days, 365));

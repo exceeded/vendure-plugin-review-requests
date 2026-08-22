@@ -48,6 +48,28 @@ export class ReviewRequestController {
         });
     }
 
+    /** Review panel on the admin order-detail page. */
+    @Get('order-status/:orderId')
+    async orderStatus(@Ctx() ctx: RequestContext, @Res() res: Response, @Param('orderId') orderId: string) {
+        if (denyUnlessAdmin(ctx, res, false)) return;
+        const id = Number(orderId);
+        if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'bad-order-id' });
+        return res.json(await this.service.orderReviewStatus(id));
+    }
+
+    /** Manually send (or force-resend) the review invitation for one order. */
+    @Post('send-order/:orderId')
+    async sendOrder(@Ctx() ctx: RequestContext, @Res() res: Response, @Param('orderId') orderId: string, @Body() body: any) {
+        if (denyUnlessAdmin(ctx, res, true)) return;
+        if (!ReviewRequestPlugin.hasPremiumAccess()) {
+            return res.status(402).json({ error: 'licence_required', message: 'Sending review requests requires a licence (or an active evaluation).' });
+        }
+        const id = Number(orderId);
+        if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'bad-order-id' });
+        const result = await this.service.sendForOrder(id, !!body?.force);
+        return res.status(result.ok ? 200 : 400).json(result);
+    }
+
     /** Admin-UI licence activation: paste the key from the purchase
      *  email, verified with exactly the boot-time checks, applied
      *  immediately (no .env edit, no redeploy) and persisted. */

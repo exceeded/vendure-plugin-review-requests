@@ -165,6 +165,7 @@ export class ReviewRequestPlugin {
         extensionPath: __dirname + '/../ui',
         ngModules: [
             { type: 'lazy' as const, route: 'review-requests', ngModuleFileName: 'review-requests.module.ts', ngModuleName: 'ReviewRequestsModule' },
+            { type: 'shared' as const, ngModuleFileName: 'order-review-shared.module.ts', ngModuleName: 'OrderReviewSharedModule' },
         ],
     };
 }

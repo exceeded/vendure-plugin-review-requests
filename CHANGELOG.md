@@ -4,6 +4,16 @@ All notable changes to `@huloglobal/vendure-plugin-review-requests` are document
 here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] — 2026-08-22
+
+### Added
+- **Review panel on the admin order page.** Shows whether this order's
+  customer was invited to review (with history), and lets staff send
+  the invitation manually — including a confirmed force-resend and a
+  confirmed override for excluded customers. Opt-outs are always
+  honoured server-side. Light/dark theme aware. New
+  GET order-status/:orderId + POST send-order/:orderId endpoints.
+
 ## [0.10.0] — 2026-08-21
 
 ### Added
