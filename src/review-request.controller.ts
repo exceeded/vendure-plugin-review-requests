@@ -7,6 +7,7 @@ import { ReviewRequestPlugin } from './plugin';
 import { ReviewChannelConfig } from './types';
 import { renderTemplate, wrapEmail } from './templates';
 import { buildReviewUrl, renderStars } from './trustpilot';
+import { performSelfUpdate, selfUpdateEnv } from '@huloglobal/vendure-licence-sdk';
 
 function denyUnlessAdmin(ctx: RequestContext, res: Response, write: boolean): boolean {
     const needed = write ? [Permission.UpdateSettings] : [Permission.ReadSettings];
@@ -41,6 +42,7 @@ export class ReviewRequestController {
             name: ReviewRequestPlugin.getPackageName(),
             version: ReviewRequestPlugin.getPackageVersion(),
             update: updater ? updater.getStatus() : null,
+            selfUpdate: selfUpdateEnv(),
             licensed: !!licence?.valid,
             licenceMessage: licence?.valid ? '' : (licence?.message || 'No licence key configured'),
             tier: licence?.valid ? 'paid' : (ReviewRequestPlugin.getEvalState()?.active ? 'trial' : 'free'),
@@ -67,6 +69,20 @@ export class ReviewRequestController {
         const id = Number(orderId);
         if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'bad-order-id' });
         const result = await this.service.sendForOrder(id, !!body?.force);
+        return res.status(result.ok ? 200 : 400).json(result);
+    }
+
+    /** One-click in-app update (owner-approved feature): installs a
+     *  registry-verified version of THIS plugin via the host's package
+     *  manager and restarts under the process supervisor. Admin-only;
+     *  package name is hard-coded; HULO_SELF_UPDATE=off disables. */
+    @Post('update/run')
+    async updateRun(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
+        if (denyUnlessAdmin(ctx, res, true)) return;
+        const updater = ReviewRequestPlugin.getUpdateChecker();
+        const target = String(body?.version || updater?.getStatus()?.latest || '').trim();
+        if (!target) return res.status(400).json({ ok: false, message: 'No target version known yet — the registry check runs daily; try again shortly.' });
+        const result = await performSelfUpdate({ packageName: ReviewRequestPlugin.getPackageName(), targetVersion: target });
         return res.status(result.ok ? 200 : 400).json(result);
     }
 
