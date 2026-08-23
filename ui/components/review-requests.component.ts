@@ -39,6 +39,21 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
             </div>
         </vdr-page-block>
 
+        <vdr-page-block *ngIf="meta?.update?.updateAvailable && !updateDismissed">
+            <div class="update-banner">
+                <div>
+                    <strong>⬆️ Update available</strong> —
+                    <!--email_off-->v{{ meta.update.current }} → <strong>v{{ meta.update.latest }}</strong><!--/email_off-->.
+                    Run <code class="upd-cmd">npm install &#64;huloglobal/vendure-plugin-review-requests&#64;{{ meta.update.latest }}</code> and restart.
+                </div>
+                <div class="actions">
+                    <button class="gbtn gbtn-outline gbtn-sm" (click)="copyUpdateCmd()">{{ cmdCopied ? 'Copied ✓' : 'Copy command' }}</button>
+                    <a href="https://huloglobal.com/vendure-plugins/review-requests/" target="_blank" class="gbtn gbtn-outline gbtn-sm">What&rsquo;s new ↗</a>
+                    <button class="gbtn gbtn-outline gbtn-sm" (click)="updateDismissed = true">Dismiss</button>
+                </div>
+            </div>
+        </vdr-page-block>
+
         <vdr-page-block *ngIf="meta && !meta.licensed">
             <div class="update-banner major" *ngIf="meta.tier === 'trial'">
                 <div>
@@ -477,6 +492,8 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
         .cust-info strong { font-size:13px; } .cust-info .hint { margin:0; }
         .update-banner { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; padding:12px 16px; border-radius:10px; font-size:13px; background:var(--gb-tint-warn); border:1px solid var(--gb-line-warn); }
         .update-banner .actions { display:flex; gap:6px; }
+        .upd-cmd { font-family: monospace; font-size: 12px; background: rgba(0,0,0,.06); padding: 2px 6px; border-radius: 5px; }
+        :host-context([data-theme='dark']) .upd-cmd { background: rgba(255,255,255,.1); }
         .eval-actions { align-items:center; }
         .eval-email { padding:5px 9px; border:1px solid var(--gb-ui-border); border-radius:7px; font-size:12.5px; min-width:190px; background:#fff; color:#0f172a; }
         .eval-ok { font-size:12.5px; color:var(--gb-strong); font-weight:600; }
@@ -488,6 +505,17 @@ export class ReviewRequestsComponent implements OnInit {
     remindEmail = '';
     remindMeSending = false;
     remindMeSent = false;
+    updateDismissed = false;
+    cmdCopied = false;
+
+    copyUpdateCmd() {
+        const cmd = `npm install &#64;huloglobal/vendure-plugin-review-requests@${this.meta?.update?.latest || 'latest'}`;
+        navigator.clipboard?.writeText(cmd).then(() => {
+            this.cmdCopied = true;
+            this.cdr.markForCheck();
+            setTimeout(() => { this.cmdCopied = false; this.cdr.markForCheck(); }, 2500);
+        });
+    }
     licenceKeyInput = '';
     activating = false;
     configs: ReviewConfig[] = [];
