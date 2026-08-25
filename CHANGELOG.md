@@ -4,6 +4,13 @@ All notable changes to `@huloglobal/vendure-plugin-review-requests` are document
 here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] — 2026-08-25
+
+### Changed
+- The update banner's "What's new" link now opens the plugin's
+  changelog page on huloglobal.com, so you can read exactly what a
+  release contains before updating.
+
 ## [0.12.0] — 2026-08-23
 
 ### Added
