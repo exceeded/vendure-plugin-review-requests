@@ -10,6 +10,13 @@ const loggerCtx = 'ReviewRequests';
 export class ReviewCrons {
     constructor(private service: ReviewRequestService, private processContext: ProcessContext) {}
 
+    /** Concurrency guard: the schedule explorer has been observed invoking
+     *  this handler twice in the same tick, and two overlapping scans could
+     *  race past the per-order dedup and double-send. The flag flips
+     *  synchronously before the first await, so a same-tick duplicate exits
+     *  immediately. */
+    private runInFlight = false;
+
     /** Hourly eligibility scan + send. Worker only; runs for licensed
      *  installs and installs inside the evaluation window. */
     @Cron(CronExpression.EVERY_HOUR)
@@ -17,10 +24,16 @@ export class ReviewCrons {
         if (this.processContext.isServer) return;
         if (getOptions().disableCron) return;
         if (!ReviewRequestPlugin.hasPremiumAccess()) return;
-        const results = await this.service.runAll(false);
-        const sent = results.reduce((n, r) => n + (r.sent || 0), 0);
-        if (sent > 0) {
-            Logger.info(`Sent ${sent} review invitation(s) across ${results.length} channel(s)`, loggerCtx);
+        if (this.runInFlight) return;
+        this.runInFlight = true;
+        try {
+            const results = await this.service.runAll(false);
+            const sent = results.reduce((n, r) => n + (r.sent || 0), 0);
+            if (sent > 0) {
+                Logger.info(`Sent ${sent} review invitation(s) across ${results.length} channel(s)`, loggerCtx);
+            }
+        } finally {
+            this.runInFlight = false;
         }
     }
 }

@@ -4,6 +4,17 @@ All notable changes to `@huloglobal/vendure-plugin-review-requests` are document
 here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.2] — 2026-08-25
+
+### Fixed
+- **Double-send race hardening.** The hourly cron now carries a
+  single-flight guard: schedule explorers were observed firing the handler
+  twice in the same tick, and two overlapping scans could have raced past
+  the per-order dedup and emailed a customer twice. Duplicate invocations
+  now exit immediately.
+- **Cleaner audit log.** A skipped order (excluded / cooldown) is logged
+  once per reason instead of on every hourly re-scan of its window.
+
 ## [0.13.1] — 2026-08-25
 
 ### Fixed

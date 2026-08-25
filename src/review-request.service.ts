@@ -480,9 +480,20 @@ export class ReviewRequestService implements OnModuleInit {
             // already invited for this order?
             const [prior] = await this.db.query(`SELECT id FROM review_log WHERE orderId = ? AND status = 'sent' LIMIT 1`, [o.id]);
             if (prior) { continue; }
+            // Log each skip reason at most once per order: the hourly scan
+            // re-visits every order for its whole 3-day window, and repeating
+            // identical skip rows only buries the audit trail.
+            const logSkipOnce = async (reason: string) => {
+                if (dryRun) return;
+                const [already] = await this.db.query(
+                    `SELECT id FROM review_log WHERE orderId = ? AND status = 'skipped' AND reason = ? LIMIT 1`,
+                    [o.id, reason],
+                );
+                if (!already) await this.logSend(o.id, o.code, cfg.channelId, email, 'skipped', reason, '');
+            };
             // excluded / opted out?
             if (await this.isExcluded(email)) {
-                if (!dryRun) await this.logSend(o.id, o.code, cfg.channelId, email, 'skipped', 'excluded', '');
+                await logSkipOnce('excluded');
                 out.skipped++; continue;
             }
             // cooldown: invited (any order) within cooldownDays?
@@ -492,7 +503,7 @@ export class ReviewRequestService implements OnModuleInit {
                     [email, cfg.cooldownDays],
                 );
                 if (recent) {
-                    if (!dryRun) await this.logSend(o.id, o.code, cfg.channelId, email, 'skipped', 'cooldown', '');
+                    await logSkipOnce('cooldown');
                     out.skipped++; continue;
                 }
             }
