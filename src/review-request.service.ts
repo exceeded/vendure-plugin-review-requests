@@ -462,9 +462,10 @@ export class ReviewRequestService implements OnModuleInit {
         // lookback so we don't rescan ancient history. Dedup does the rest.
         const orders = await this.db.query(
             `SELECT o.id, o.code, o.state, o.subTotalWithTax, o.orderPlacedAt, c.emailAddress AS email, c.firstName
-             FROM \`order\` o JOIN customer c ON c.id = o.customerId
-             WHERE o.channelId = ?
-               AND o.state = ?
+             FROM \`order\` o
+             JOIN customer c ON c.id = o.customerId
+             JOIN order_channels_channel occ ON occ.orderId = o.id AND occ.channelId = ?
+             WHERE o.state = ?
                AND o.orderPlacedAt <= DATE_SUB(NOW(), INTERVAL ? DAY)
                AND o.orderPlacedAt >  DATE_SUB(NOW(), INTERVAL ? DAY)
                AND o.subTotalWithTax >= ?
@@ -518,7 +519,8 @@ export class ReviewRequestService implements OnModuleInit {
     /** Per-order invitation state for the admin order-detail panel. */
     async orderReviewStatus(orderId: number): Promise<any> {
         const [order] = await this.db.query(
-            `SELECT o.id, o.code, o.state, o.channelId, c.emailAddress AS email, c.firstName
+            `SELECT o.id, o.code, o.state, c.emailAddress AS email, c.firstName,
+                    (SELECT MIN(occ.channelId) FROM order_channels_channel occ WHERE occ.orderId = o.id) AS channelId
              FROM \`order\` o JOIN customer c ON c.id = o.customerId WHERE o.id = ? LIMIT 1`, [orderId]).catch(() => []);
         if (!order) return { found: false };
         const email = String(order.email || '').toLowerCase();
@@ -541,7 +543,8 @@ export class ReviewRequestService implements OnModuleInit {
      *  exclusions (an explicit staff decision). */
     async sendForOrder(orderId: number, force = false): Promise<{ ok: boolean; reason?: string }> {
         const [o] = await this.db.query(
-            `SELECT o.id, o.code, o.channelId, c.emailAddress AS email, c.firstName
+            `SELECT o.id, o.code, c.emailAddress AS email, c.firstName,
+                    (SELECT MIN(occ.channelId) FROM order_channels_channel occ WHERE occ.orderId = o.id) AS channelId
              FROM \`order\` o JOIN customer c ON c.id = o.customerId WHERE o.id = ? LIMIT 1`, [orderId]).catch(() => []);
         if (!o) return { ok: false, reason: 'Order not found' };
         const email = String(o.email || '').toLowerCase();

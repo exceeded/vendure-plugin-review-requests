@@ -4,6 +4,16 @@ All notable changes to `@huloglobal/vendure-plugin-review-requests` are document
 here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.1] — 2026-08-25
+
+### Fixed
+- **Eligibility scan never found any orders.** The candidate query assumed
+  an `order.channelId` column, but Vendure stores the order↔channel
+  relation in the `order_channels_channel` join table — so the hourly scan
+  failed on every install (the error was caught and logged, and no
+  invitations were ever sent). The scan, the admin order panel and manual
+  send now resolve the channel through the join table.
+
 ## [0.13.0] — 2026-08-25
 
 ### Added
