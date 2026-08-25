@@ -1,4 +1,4 @@
-import { LicenceStore } from '@huloglobal/vendure-licence-sdk';
+import { LicenceStore, adapterFor } from '@huloglobal/vendure-licence-sdk';
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Logger, TransactionalConnection } from '@vendure/core';
 import { createHmac } from 'crypto';
@@ -19,7 +19,7 @@ export class ReviewRequestService implements OnModuleInit {
 
     constructor(private connection: TransactionalConnection) {}
 
-    private get db() { return this.connection.rawConnection; }
+    private get db() { return adapterFor(this.connection.rawConnection); }
 
     private licenceStore = new LicenceStore((sql, params) => this.db.query(sql, params));
 
@@ -158,6 +158,7 @@ export class ReviewRequestService implements OnModuleInit {
              c.trustpilotDomain || '', c.reviewUrlTemplate || DEFAULT_CONFIG.reviewUrlTemplate, c.trustpilotApiKey || '',
              c.trustpilotBusinessUnitId || '', c.businessName || '', c.replyTo || '', c.maxPerRun || 200,
              c.reviewMode || 'service', c.productReviewUrlTemplate || ''],
+            { conflictColumns: ['channelId'] },
         );
     }
 
@@ -172,6 +173,7 @@ export class ReviewRequestService implements OnModuleInit {
             `INSERT INTO review_template (channelId, subject, body) VALUES (?, ?, ?)
              ON DUPLICATE KEY UPDATE subject = VALUES(subject), body = VALUES(body)`,
             [channelId, subject, body],
+            { conflictColumns: ['channelId'] },
         );
     }
     async resetTemplate(channelId: number): Promise<void> {
