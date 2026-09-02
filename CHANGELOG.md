@@ -4,6 +4,12 @@ All notable changes to `@huloglobal/vendure-plugin-review-requests` are document
 here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.3] — 2026-09-02
+
+### Changed
+- **Licence SDK ^0.11.0.** Master licences (one key that activates every HULO plugin) and hardware-bound keys are now accepted by the runtime licence check.
+- **Branding.** Refreshed HULO Global logo (inline HG monogram) in the admin UI.
+
 ## [0.13.2] — 2026-08-25
 
 ### Fixed
