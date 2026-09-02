@@ -4,6 +4,15 @@ All notable changes to `@huloglobal/vendure-plugin-review-requests` are document
 here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] — 2026-09-02
+
+### Added
+- **Buy licence from the admin.** The evaluation / free-tier banner now has a plan picker and a **Buy licence** button: checkout opens in a new tab and, once payment completes, the licence **installs itself** — no email round-trip, no `.env` edit, no restart. Renewed subscription keys are picked up automatically too. New admin endpoints `licence/purchase-link` and `licence/claim-status`.
+
+### Changed
+- Requires `@huloglobal/vendure-licence-sdk` ^0.12.0.
+- The 7-day card trial at checkout has been retired: every install already gets the 14-day no-card evaluation, and paid plans now bill from day one.
+
 ## [0.13.3] — 2026-09-02
 
 ### Changed

@@ -83,3 +83,7 @@ or pass `smtp` to `init()`).
 ## License
 
 AGPL-3.0-or-later — commercial licences available from HULO Global.
+
+## Buying a licence
+
+Click **Buy licence** in the plugin's admin page (evaluation or free-tier banner), pick monthly, annual or lifetime, and complete checkout in the new tab — the key installs itself within a minute. You can also buy at https://elite.charity/licence/buy/vendure-plugin-review-requests and paste the emailed key into the admin.
