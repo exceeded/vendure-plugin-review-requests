@@ -7,7 +7,7 @@ import { ReviewRequestPlugin } from './plugin';
 import { ReviewChannelConfig } from './types';
 import { renderTemplate, wrapEmail } from './templates';
 import { buildReviewUrl, renderStars } from './trustpilot';
-import { performSelfUpdate, selfUpdateEnv } from '@huloglobal/vendure-licence-sdk';
+import { performSelfUpdate, selfUpdateEnv, evalInstanceId, describeLicence } from '@huloglobal/vendure-licence-sdk';
 
 function denyUnlessAdmin(ctx: RequestContext, res: Response, write: boolean): boolean {
     const needed = write ? [Permission.UpdateSettings] : [Permission.ReadSettings];
@@ -44,6 +44,7 @@ export class ReviewRequestController {
             update: updater ? updater.getStatus() : null,
             selfUpdate: selfUpdateEnv(),
             licensed: !!licence?.valid,
+            licence: describeLicence(licence),
             licenceMessage: licence?.valid ? '' : (licence?.message || 'No licence key configured'),
             tier: licence?.valid ? 'paid' : (ReviewRequestPlugin.getEvalState()?.active ? 'trial' : 'free'),
             eval: ReviewRequestPlugin.getEvalState(),
@@ -137,12 +138,25 @@ export class ReviewRequestController {
         return res.json({ ...st, licensed: ReviewRequestPlugin.isLicensed() });
     }
 
+    /** Stripe billing portal (update card, cancel, switch plan) for the
+     *  subscription behind this install's licence. Ownership is proven by
+     *  the buy-from-admin claim or by the stored licence key itself. */
+    @Post('licence/portal-link')
+    async licencePortalLink(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (denyUnlessAdmin(ctx, res, true)) return;
+        let storedKey: string | null = null;
+        try { storedKey = await this.service.loadStoredLicenceKey(); } catch { storedKey = null; }
+        const url = await this.purchaseClaimClient().billingPortalUrl(storedKey);
+        if (!url) return res.status(404).json({ message: 'No billing portal is available for this licence (lifetime and master licences have nothing to manage; for a key set via the environment, reply to your receipt email for a portal link).' });
+        return res.json({ url });
+    }
+
     /** Buy-from-admin auto-install client (hooks live here so the service
      *  never has to import the plugin class). */
     private purchaseClaimClient() {
         return this.service.initPurchaseClaim({
             packageName: ReviewRequestPlugin.getPackageName(),
-            instanceId: () => ReviewRequestPlugin.getEvalInstanceId(),
+            instanceId: () => evalInstanceId(),
             onLicence: async (key: string) => {
                 const status = ReviewRequestPlugin.activateRuntimeLicence(key);
                 if (!status.valid) return false;
