@@ -140,7 +140,7 @@ export class ReviewRequestPlugin {
             publicKey: HULO_PUBLIC_KEY, revokedIds: ReviewRequestPlugin.revocation.getRevokedIds(),
         });
         if (!ReviewRequestPlugin.licenceStatus.valid) {
-            // Unlicensed: start the server-anchored 14-day full-featured
+            // Unlicensed: register the install (no premium is granted by this; the 14-day
             // evaluation. All premium paths stay enabled while it runs;
             // when it ends the plugin drops to the free tier (configure,
             // preview + test-send only).
@@ -149,7 +149,7 @@ export class ReviewRequestPlugin {
                 ReviewRequestPlugin.evalClient.start();
             }
             // eslint-disable-next-line no-console
-            console.warn(`[${PKG_NAME}] ${ReviewRequestPlugin.licenceStatus.message} — running the 14-day FULL-FEATURED evaluation; afterwards the plugin drops to the free tier (configure, preview + test-send only). Keep it: https://huloglobal.com/vendure-plugins/review-requests/`);
+            console.warn(`[${PKG_NAME}] ${ReviewRequestPlugin.licenceStatus.message} — running in the FREE tier — start the 14-day free trial (card required, nothing charged until day 15) from the plugin's admin page`);
         }
         if (!ReviewRequestPlugin.heartbeat) {
             ReviewRequestPlugin.heartbeat = new Heartbeat({
