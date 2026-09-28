@@ -88,7 +88,7 @@ licence** from https://huloglobal.com/vendure-plugins/review-requests/.
 ## Compatibility
 
 Vendure `>=3.5 <4`. MySQL / MariaDB / PostgreSQL (every statement is checked
-against PostgreSQL 17 by the corpus test in `tests/`). Tables are created on
+against PostgreSQL 17 and MariaDB by the corpus test in `tests/`). Tables are created on
 boot. Sends via your SMTP (`SMTP_SERVER` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_FROM`,
 or pass `smtp` to `init()`).
 
