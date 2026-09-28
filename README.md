@@ -51,6 +51,12 @@ ReviewRequestPlugin.uiExtensions,   // in your compileUiExtensions extensions ar
 Then open **Review requests** in the admin, set your Trustpilot domain, timing and
 email, hit **Send test**, and switch the channel on.
 
+
+> **Since 0.15.2:** invitations need `publicBaseUrl` (the unsubscribe link);
+> set `optOutSecret` to keep unsubscribe links valid across reinstalls
+> (otherwise a per-install secret is generated and stored); the trigger
+> matches orders at or beyond the chosen state within a 45-day window.
+
 ## Getting your Trustpilot bits (all free)
 
 - **Review link** — nothing needed; it's just `evaluate/<your-domain>`.

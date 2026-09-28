@@ -23,6 +23,11 @@ export class ReviewCrons {
     async sendDueInvitations() {
         if (this.processContext.isServer) return;
         if (getOptions().disableCron) return;
+        // A key activated from the admin UI lives in the SERVER process; the worker
+        // (which runs this cron) only saw the stored key at boot. Re-load it here.
+        if (!ReviewRequestPlugin.isLicensed()) {
+            try { const k = await this.service.loadStoredLicenceKey(); if (k) ReviewRequestPlugin.activateRuntimeLicence(k); } catch { /* store unavailable */ }
+        }
         if (!ReviewRequestPlugin.hasPremiumAccess()) return;
         if (this.runInFlight) return;
         this.runInFlight = true;
@@ -32,6 +37,8 @@ export class ReviewCrons {
             if (sent > 0) {
                 Logger.info(`Sent ${sent} review invitation(s) across ${results.length} channel(s)`, loggerCtx);
             }
+        } catch (e: any) {
+            Logger.error(`review invitation run failed: ${e?.message || e}`, loggerCtx);
         } finally {
             this.runInFlight = false;
         }

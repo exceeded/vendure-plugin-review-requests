@@ -7,10 +7,10 @@ import { ReviewRequestPlugin } from './plugin';
 import { ReviewChannelConfig } from './types';
 import { renderTemplate, wrapEmail } from './templates';
 import { buildReviewUrl, renderStars } from './trustpilot';
-import { performSelfUpdate, selfUpdateEnv, evalInstanceId, describeLicence } from '@huloglobal/vendure-licence-sdk';
+import { performSelfUpdate, selfUpdateEnv, evalInstanceId, describeLicence, RateLimiter } from '@huloglobal/vendure-licence-sdk';
 
-function denyUnlessAdmin(ctx: RequestContext, res: Response, write: boolean): boolean {
-    const needed = write ? [Permission.UpdateSettings] : [Permission.ReadSettings];
+function denyUnlessAdmin(ctx: RequestContext, res: Response, write: boolean | 'superadmin'): boolean {
+    const needed = write === 'superadmin' ? [Permission.SuperAdmin] : write ? [Permission.UpdateSettings] : [Permission.ReadSettings];
     if (!ctx.userHasPermissions(needed)) { res.status(403).json({ error: 'forbidden' }); return true; }
     return false;
 }
@@ -20,9 +20,23 @@ export class ReviewRequestController {
     constructor(private service: ReviewRequestService) {}
 
     // ── Public: one-click unsubscribe (signed) ─────────────────────────
+    /** GET only shows a confirm button: link scanners and mail clients prefetch GETs and used to unsubscribe people silently. */
     @Get('optout')
+    async optoutPage(@Req() req: Request, @Res() res: Response, @Query('e') e?: string, @Query('t') t?: string) {
+        if (this.limited(req, res)) return;
+        const valid = await this.service.optOutTokenValid(String(e || ''), String(t || ''));
+        res.setHeader('cache-control', 'no-store');
+        if (!valid) return res.status(400).type('html').send(this.optoutHtml(false, 'Link expired', 'This unsubscribe link is invalid or has expired. If you keep getting emails, just reply to one and we\'ll remove you.'));
+        const action = `/review-requests/optout?e=${encodeURIComponent(String(e || ''))}&t=${encodeURIComponent(String(t || ''))}`;
+        return res.type('html').send(this.optoutHtml(true, 'Unsubscribe from review requests?', `<form method="post" action="${action}"><button type="submit" style="background:#0f172a;color:#fff;border:0;border-radius:8px;padding:12px 22px;font-size:15px;cursor:pointer">Yes, unsubscribe me</button></form>`));
+    }
+
+    /** RFC 8058 one-click (mail clients POST here) and the confirm button above. */
+    @Post('optout')
     async optout(@Req() req: Request, @Res() res: Response, @Query('e') e?: string, @Query('t') t?: string) {
+        if (this.limited(req, res)) return;
         const ok = await this.service.optOut(String(e || ''), String(t || ''));
+        res.setHeader('cache-control', 'no-store');
         res.type('html').send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <div style="font-family:Arial,sans-serif;max-width:520px;margin:60px auto;padding:24px;text-align:center;color:#0f172a">
 <h1 style="font-size:22px">${ok ? 'You\'re unsubscribed' : 'Link expired'}</h1>
@@ -30,6 +44,19 @@ export class ReviewRequestController {
     ? 'You won\'t receive any more review requests from us. Thanks — and sorry for the interruption.'
     : 'This unsubscribe link is invalid or has expired. If you keep getting emails, just reply to one and we\'ll remove you.'}</p>
 </div>`);
+    }
+
+    private optoutHtml(ok: boolean, title: string, body: string): string {
+        return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<div style="font-family:Arial,sans-serif;max-width:520px;margin:60px auto;padding:24px;text-align:center;color:#0f172a">
+<h1 style="font-size:22px">${title}</h1><div style="color:#475569;line-height:1.6">${body}</div></div>`;
+    }
+
+    private static limiter = new RateLimiter({ capacity: 30, windowMs: 60_000 });
+    private limited(req: Request, res: Response): boolean {
+        const ip = String(req.ip || '');
+        if (ip && !ReviewRequestController.limiter.allow(`optout|${ip}`)) { res.status(429).type('text').send('Too many requests'); return true; }
+        return false;
     }
 
     // ── Admin: meta / licence ──────────────────────────────────────────
@@ -79,9 +106,10 @@ export class ReviewRequestController {
      *  package name is hard-coded; HULO_SELF_UPDATE=off disables. */
     @Post('update/run')
     async updateRun(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
-        if (denyUnlessAdmin(ctx, res, true)) return;
+        if (denyUnlessAdmin(ctx, res, 'superadmin')) return;
         const updater = ReviewRequestPlugin.getUpdateChecker();
         const target = String(body?.version || updater?.getStatus()?.latest || '').trim();
+        if (target && !/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(target)) return res.status(400).json({ ok: false, message: 'Not a valid version.' });
         if (!target) return res.status(400).json({ ok: false, message: 'No target version known yet — the registry check runs daily; try again shortly.' });
         const result = await performSelfUpdate({ packageName: ReviewRequestPlugin.getPackageName(), targetVersion: target });
         return res.status(result.ok ? 200 : 400).json(result);
@@ -177,15 +205,16 @@ export class ReviewRequestController {
     @Post('eval/remind-me')
     async evalRemindMe(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
         if (denyUnlessAdmin(ctx, res, true)) return;
-        const email = String(body?.email || '').trim();
+        const email = String(body?.email || '').trim().slice(0, 320);
         const instanceId = ReviewRequestPlugin.getEvalInstanceId();
-        if (!email || !instanceId) return res.status(400).json({ error: 'bad-request' });
+        if (!/^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/.test(email) || !instanceId) return res.status(400).json({ error: 'bad-request' });
         try {
             const base = (process.env.HULO_LICENCE_EVAL_URL || 'https://elite.charity/licence/eval/register').replace(/\/register$/, '');
             const resp = await fetch(`${base}/lead`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ plugin: ReviewRequestPlugin.getPackageName(), instanceId, email }),
+                signal: AbortSignal.timeout(8_000),
             });
             if (!resp.ok) return res.status(502).json({ error: 'upstream', status: resp.status });
             return res.json({ ok: true });
@@ -203,9 +232,27 @@ export class ReviewRequestController {
     @Post('config')
     async saveConfig(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: { configs: ReviewChannelConfig[] }) {
         if (denyUnlessAdmin(ctx, res, true)) return;
+        const known = new Set((await this.service.getAllConfigs()).map((c: any) => Number(c.channelId)));
+        const int = (v: any, min: number, max: number, dflt: number) => { const n = Math.floor(Number(v)); return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : dflt; };
+        const str = (v: any, max: number) => String(v ?? '').slice(0, max);
         let saved = 0;
-        for (const c of body.configs || []) { await this.service.saveConfig(c); saved++; }
-        return res.json({ ok: true, saved });
+        const rejected: number[] = [];
+        for (const raw of (Array.isArray(body?.configs) ? body.configs : []).slice(0, 50)) {
+            const channelId = Number(raw?.channelId);
+            if (!known.has(channelId)) { rejected.push(channelId); continue; }
+            const c: ReviewChannelConfig = {
+                ...raw, channelId,
+                enabled: !!raw.enabled,
+                triggerState: (['Delivered', 'PaymentSettled', 'Shipped'].includes(raw.triggerState) ? raw.triggerState : 'Delivered'),
+                delayDays: int(raw.delayDays, 0, 365, 14), cooldownDays: int(raw.cooldownDays, 0, 3650, 120),
+                maxPerRun: int(raw.maxPerRun, 1, 2000, 200), minOrderValuePence: int(raw.minOrderValuePence, 0, 1_000_000_000, 0),
+                trustpilotDomain: str(raw.trustpilotDomain, 190), reviewUrlTemplate: str(raw.reviewUrlTemplate, 400), trustpilotApiKey: str(raw.trustpilotApiKey, 190),
+                trustpilotBusinessUnitId: str(raw.trustpilotBusinessUnitId, 64), businessName: str(raw.businessName, 190), replyTo: str(raw.replyTo, 190),
+                reviewMode: (['service', 'product', 'both'].includes(raw.reviewMode) ? raw.reviewMode : 'service'), productReviewUrlTemplate: str(raw.productReviewUrlTemplate, 400),
+            };
+            await this.service.saveConfig(c); saved++;
+        }
+        return res.json({ ok: true, saved, rejected });
     }
 
     // ── Admin: Trustpilot rating check (used by the settings tab) ───────

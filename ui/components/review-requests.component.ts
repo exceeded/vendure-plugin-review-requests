@@ -145,7 +145,7 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
             <vdr-page-block>
                 <div class="card"><div class="card-block">
                     <div class="row-between"><h3 class="step-title" style="margin:0">Your review rating</h3>
-                        <button class="gbtn gbtn-outline gbtn-sm" (click)="runNow()" [disabled]="running || (meta && !meta.licensed)">{{ running ? 'Sending…' : 'Send due now' }}</button></div>
+                        <button class="gbtn gbtn-outline gbtn-sm" (click)="runNow()" [disabled]="running || (meta && meta.tier === 'free')">{{ running ? 'Sending…' : 'Send due now' }}</button></div>
                     <div *ngIf="rating" class="rating-box">
                         <div class="stars"><span class="star" *ngFor="let s of [1,2,3,4,5]" [class.on]="s <= (rating.stars||0)">★</span></div>
                         <div class="hint">TrustScore <strong>{{ rating.trustScore | number:'1.1-1' }}</strong> · {{ rating.numberOfReviews | number }} reviews</div>
@@ -313,7 +313,7 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
                 </div>
                 <div *ngIf="preview" class="tpl-preview">
                     <div class="tpl-preview-subject">{{ preview.subject }}</div>
-                    <div [innerHTML]="safeHtml(preview.html)"></div>
+                    <div [innerHTML]="previewSafe"></div>
                 </div>
                 <h4 class="subsection-title">Send a test</h4>
                 <div class="picker">
@@ -558,7 +558,7 @@ export class ReviewRequestsComponent implements OnInit {
             this.cdr.markForCheck();
             return;
         }
-        setTimeout(() => {
+        this.restartTimer = setTimeout(() => {
             this.http.get<any>('/review-requests/meta').subscribe({
                 next: m => {
                     const v = m?.version || m?.update?.current;
@@ -582,7 +582,7 @@ export class ReviewRequestsComponent implements OnInit {
     cmdCopied = false;
 
     copyUpdateCmd() {
-        const cmd = `npm install &#64;huloglobal/vendure-plugin-review-requests@${this.meta?.update?.latest || 'latest'}`;
+        const cmd = `npm install @huloglobal/vendure-plugin-review-requests@${this.meta?.update?.latest || 'latest'}`;
         navigator.clipboard?.writeText(cmd).then(() => {
             this.cmdCopied = true;
             this.cdr.markForCheck();
@@ -681,7 +681,8 @@ export class ReviewRequestsComponent implements OnInit {
     }
     private startClaimPoll() { this.stopClaimPoll(); this.claimTimer = setInterval(() => this.checkClaim(false), 15000); }
     private stopClaimPoll() { if (this.claimTimer) { clearInterval(this.claimTimer); this.claimTimer = null; } }
-    ngOnDestroy() { this.stopClaimPoll(); }
+    private restartTimer: any = null;
+    ngOnDestroy() { this.stopClaimPoll(); clearTimeout(this.custTimer); clearTimeout(this.restartTimer); }
 
     portalOpening = false;
     licenceLabel(): string {
@@ -899,7 +900,8 @@ export class ReviewRequestsComponent implements OnInit {
     loadTemplate() { if (!this.current) return; this.preview = null; this.tplDirty = false; this.htmlMode = false; this.http.get<any>(`/review-requests/template?channelId=${this.current.channelId}`).subscribe({ next: t => { this.template = t; this.cdr.markForCheck(); setTimeout(() => this.syncEditorFromModel(), 0); }, error: () => undefined }); }
     saveTemplate() { if (!this.current || !this.template) return; this.http.post('/review-requests/template', { channelId: this.current.channelId, subject: this.template.subject, body: this.template.body }).subscribe({ next: () => { this.tplDirty = false; this.notify.success('Email saved'); this.loadTemplate(); }, error: () => this.notify.error('Save failed') }); }
     resetTemplate() { if (!this.current) return; this.http.post('/review-requests/template', { channelId: this.current.channelId, reset: true }).subscribe({ next: () => { this.notify.success('Reset to default'); this.loadTemplate(); }, error: () => this.notify.error('Failed') }); }
-    previewTemplate() { if (!this.current || !this.template) return; this.http.post<any>('/review-requests/template/preview', { channelId: this.current.channelId, subject: this.template.subject, body: this.template.body }).subscribe({ next: p => { this.preview = p; this.cdr.markForCheck(); }, error: () => this.notify.error('Preview failed') }); }
+    previewSafe: SafeHtml | null = null;
+    previewTemplate() { if (!this.current || !this.template) return; this.http.post<any>('/review-requests/template/preview', { channelId: this.current.channelId, subject: this.template.subject, body: this.template.body }).subscribe({ next: p => { this.preview = p; this.previewSafe = this.sanitizer.bypassSecurityTrustHtml(p?.html || ''); this.cdr.markForCheck(); }, error: () => this.notify.error('Preview failed') }); }
     safeHtml(html: string): SafeHtml { return this.sanitizer.bypassSecurityTrustHtml(html); }
     sendTest() {
         if (!this.current || !this.testEmail) return; this.testing = true;

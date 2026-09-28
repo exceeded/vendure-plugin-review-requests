@@ -1,7 +1,7 @@
 import { LicenceStore, adapterFor, PurchaseClaimClient } from '@huloglobal/vendure-licence-sdk';
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Logger, TransactionalConnection } from '@vendure/core';
-import { createHmac } from 'crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import * as nodemailer from 'nodemailer';
 
 import { DEFAULT_CONFIG, ReviewChannelConfig, ReviewPluginOptions, TriggerState } from './types';
@@ -10,6 +10,9 @@ import { buildReviewUrl, fetchRating, findBusinessUnitId, renderStars, Trustpilo
 import { fetchGoogleRating } from './google';
 
 const loggerCtx = 'ReviewRequests';
+
+/** Days beyond `delayDays` an order stays a candidate (slow carriers, worker downtime). */
+const LOOKBACK_DAYS = 45;
 
 @Injectable()
 export class ReviewRequestService implements OnModuleInit {
@@ -76,8 +79,17 @@ export class ReviewRequestService implements OnModuleInit {
                 replyTo VARCHAR(190) NOT NULL DEFAULT '',
                 maxPerRun INT NOT NULL DEFAULT 200
             )`);
-        await this.db.query(`ALTER TABLE review_config ADD COLUMN IF NOT EXISTS reviewMode VARCHAR(12) NOT NULL DEFAULT 'service'`);
-        await this.db.query(`ALTER TABLE review_config ADD COLUMN IF NOT EXISTS productReviewUrlTemplate VARCHAR(400) NOT NULL DEFAULT ''`);
+        await this.addColumnIfMissing('review_config', 'reviewMode', `VARCHAR(12) NOT NULL DEFAULT 'service'`);
+        await this.addColumnIfMissing('review_config', 'productReviewUrlTemplate', `VARCHAR(400) NOT NULL DEFAULT ''`);
+        // One row per order that is being (or has been) invited: claimed BEFORE the
+        // email goes out so the hourly cron (worker) and "Send due now" (server)
+        // cannot both send for the same order.
+        await this.db.query(`
+            CREATE TABLE IF NOT EXISTS review_claim (
+                orderId INT PRIMARY KEY,
+                channelId INT NULL,
+                claimedAt DATETIME NOT NULL
+            )`);
         await this.db.query(`
             CREATE TABLE IF NOT EXISTS review_template (
                 channelId INT PRIMARY KEY,
@@ -97,8 +109,10 @@ export class ReviewRequestService implements OnModuleInit {
                 createdAt DATETIME NOT NULL,
                 INDEX idx_rl_order (orderId),
                 INDEX idx_rl_email (email, createdAt),
-                INDEX idx_rl_created (createdAt)
+                INDEX idx_rl_created (createdAt),
+                INDEX idx_rl_status (status, createdAt)
             )`);
+        for (const ddl of ['CREATE INDEX IF NOT EXISTS idx_rl_status ON review_log (status, createdAt)']) { try { await this.db.query(ddl); } catch { /* exists */ } }
         await this.db.query(`
             CREATE TABLE IF NOT EXISTS review_exclusion (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -116,6 +130,38 @@ export class ReviewRequestService implements OnModuleInit {
     }
 
     // ── Config ──────────────────────────────────────────────────────────
+    /** `ADD COLUMN IF NOT EXISTS` is MariaDB/Postgres syntax; MySQL 8 needs the check up front. */
+    private async addColumnIfMissing(table: string, column: string, ddl: string): Promise<void> {
+        const scope = this.db.dialect === 'postgres' ? 'table_catalog = current_database() AND table_schema = current_schema()' : 'table_schema = DATABASE()';
+        const rows: any[] = await this.db.query(
+            `SELECT COUNT(*) AS n FROM information_schema.columns WHERE ${scope} AND LOWER(table_name) = LOWER(?) AND LOWER(column_name) = LOWER(?)`, [table, column],
+        ).catch(() => []);
+        if (Number(rows?.[0]?.n ?? rows?.[0]?.N ?? 0) > 0) return;
+        try { await this.db.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`); }
+        catch (e: any) { if (!/duplicate|exists/i.test(String(e?.message || ''))) throw e; }
+    }
+
+    /** Claim an order for sending; false when another process already has it. */
+    private async claimOrder(orderId: number, channelId: number): Promise<boolean> {
+        const r = await this.db.query(
+            `INSERT IGNORE INTO review_claim (orderId, channelId, claimedAt) VALUES (?, ?, NOW())`, [orderId, channelId], { needAffected: true },
+        ).catch(() => null);
+        return Number(r?.affectedRows ?? r?.rowCount ?? 0) > 0;
+    }
+
+    private async releaseClaim(orderId: number): Promise<void> {
+        await this.db.query(`DELETE FROM review_claim WHERE orderId = ?`, [orderId]).catch(() => undefined);
+    }
+
+    /** The order states at or beyond the configured trigger (an order delivered 14 days ago is no longer "PaymentSettled"). */
+    static statesFor(trigger: string): string[] {
+        return ({
+            PaymentSettled: ['PaymentSettled', 'PartiallyShipped', 'Shipped', 'PartiallyDelivered', 'Delivered'],
+            Shipped: ['Shipped', 'PartiallyDelivered', 'Delivered'],
+            Delivered: ['Delivered'],
+        } as Record<string, string[]>)[trigger] || ['Delivered'];
+    }
+
     private rowToConfig(row: any, code?: string): ReviewChannelConfig {
         return {
             channelId: row.channelId,
@@ -224,10 +270,10 @@ export class ReviewRequestService implements OnModuleInit {
         if (term.length < 2) return [];
         const like = `%${term}%`;
         const rows = await this.db.query(
-            `SELECT id, firstName, lastName, emailAddress FROM customer
-             WHERE deletedAt IS NULL
-               AND (emailAddress LIKE ? OR firstName LIKE ? OR lastName LIKE ? OR CONCAT(firstName, ' ', lastName) LIKE ?)
-             ORDER BY (LOWER(emailAddress) = ?) DESC, id DESC
+            `SELECT id, \`firstName\`, \`lastName\`, \`emailAddress\` FROM customer
+             WHERE \`deletedAt\` IS NULL
+               AND (\`emailAddress\` LIKE ? OR \`firstName\` LIKE ? OR \`lastName\` LIKE ? OR CONCAT(\`firstName\`, ' ', \`lastName\`) LIKE ?)
+             ORDER BY (LOWER(\`emailAddress\`) = ?) DESC, id DESC
              LIMIT ?`,
             [like, like, like, like, term.toLowerCase(), Math.min(limit, 25)],
         ).catch(() => []);
@@ -265,18 +311,48 @@ export class ReviewRequestService implements OnModuleInit {
         return ex.length > 0;
     }
 
-    optOutToken(email: string): string {
-        const secret = this.options.optOutSecret || process.env.HULO_IP_SALT || 'hulo-review-optout';
+    private optOutSecretCache: string | null = null;
+
+    /** The HMAC secret for unsubscribe links: configured, else a per-install
+     *  random one persisted in the licence store (never the literal default
+     *  every install used to share, which let anyone forge opt-outs). */
+    private async optOutSecret(): Promise<string> {
+        const configured = this.options.optOutSecret || process.env.HULO_IP_SALT;
+        if (configured) return configured;
+        if (this.optOutSecretCache) return this.optOutSecretCache;
+        const store = new LicenceStore((sql, params) => this.db.query(sql, params));
+        try {
+            let s = await store.load('review-requests-optout-secret');
+            if (!s) {
+                await store.save('review-requests-optout-secret', randomBytes(32).toString('hex'));
+                s = await store.load('review-requests-optout-secret'); // re-read: another process may have won
+            }
+            if (s) { this.optOutSecretCache = s; return s; }
+        } catch (e: any) {
+            Logger.warn(`optout secret store unavailable: ${e?.message}`, loggerCtx);
+        }
+        return 'hulo-review-optout';
+    }
+
+    async optOutToken(email: string): Promise<string> {
+        const secret = await this.optOutSecret();
         return createHmac('sha256', secret).update(email.toLowerCase()).digest('hex').slice(0, 32);
     }
-    optOutUrl(email: string): string {
+    async optOutUrl(email: string): Promise<string> {
         const base = (this.options.publicBaseUrl || '').replace(/\/$/, '');
         if (!base) return '';
-        return `${base}/review-requests/optout?e=${encodeURIComponent(email)}&t=${this.optOutToken(email)}`;
+        return `${base}/review-requests/optout?e=${encodeURIComponent(email)}&t=${await this.optOutToken(email)}`;
+    }
+    /** Token check without applying (the GET confirmation page). */
+    async optOutTokenValid(email: string, token: string): Promise<boolean> {
+        const e = String(email || '').toLowerCase();
+        if (!e || !/^[0-9a-f]{32}$/i.test(String(token || ''))) return false;
+        const expected = await this.optOutToken(e);
+        try { return timingSafeEqual(Buffer.from(String(token).toLowerCase()), Buffer.from(expected)); } catch { return false; }
     }
     async optOut(email: string, token: string): Promise<boolean> {
         const e = String(email || '').toLowerCase();
-        if (!e || token !== this.optOutToken(e)) return false;
+        if (!(await this.optOutTokenValid(e, token))) return false;
         await this.db.query(`INSERT IGNORE INTO review_optout (email, createdAt) VALUES (?, NOW())`, [e]);
         return true;
     }
@@ -362,10 +438,10 @@ export class ReviewRequestService implements OnModuleInit {
         return this.db.query(
             `SELECT DISTINCT pt.name, pt.slug
              FROM order_line ol
-             JOIN product_variant pv ON pv.id = ol.productVariantId
-             JOIN product p ON p.id = pv.productId
-             JOIN product_translation pt ON pt.baseId = p.id AND pt.languageCode = 'en'
-             WHERE ol.orderId = ?
+             JOIN product_variant pv ON pv.id = ol.\`productVariantId\`
+             JOIN product p ON p.id = pv.\`productId\`
+             JOIN product_translation pt ON pt.\`baseId\` = p.id AND pt.\`languageCode\` = 'en'
+             WHERE ol.\`orderId\` = ?
              LIMIT 20`,
             [orderId],
         ).catch(() => []);
@@ -393,7 +469,7 @@ export class ReviewRequestService implements OnModuleInit {
         </div>`;
     }
 
-    async composeEmail(cfg: ReviewChannelConfig, to: string, firstName: string, orderCode: string, orderId = 0): Promise<{ subject: string; html: string } | null> {
+    async composeEmail(cfg: ReviewChannelConfig, to: string, firstName: string, orderCode: string, orderId = 0): Promise<{ subject: string; html: string; unsubscribeUrl: string } | null> {
         const tpl = await this.getTemplate(cfg.channelId);
         const reviewUrl = buildReviewUrl(cfg.reviewUrlTemplate, cfg.trustpilotDomain);
         const rating = await this.getRating(cfg);
@@ -415,15 +491,16 @@ export class ReviewRequestService implements OnModuleInit {
             productList = this.renderProductList(products, cfg.productReviewUrlTemplate, orderCode);
         }
 
+        const unsubscribeUrl = await this.optOutUrl(to);
         const vars = {
-            firstName: firstName || 'there', orderCode, businessName,
+            firstName: escapeHtml(firstName || 'there'), orderCode: escapeHtml(orderCode), businessName,
             reviewUrl, ratingBlock, reviewButton, productList,
-            unsubscribeUrl: this.optOutUrl(to),
+            unsubscribeUrl,
         };
-        const subject = renderTemplate(tpl.subject, vars);
+        const subject = renderTemplate(tpl.subject, { ...vars, firstName: firstName || 'there', orderCode });
         const bodyHtml = renderTemplate(tpl.body, vars);
-        const html = wrapEmail(bodyHtml, businessName, this.optOutUrl(to));
-        return { subject, html };
+        const html = wrapEmail(bodyHtml, businessName, unsubscribeUrl);
+        return { subject, html, unsubscribeUrl };
     }
 
     async sendInvitation(cfg: ReviewChannelConfig, order: { id: number; code: string; email: string; firstName: string }): Promise<{ ok: boolean; reason?: string }> {
@@ -431,29 +508,51 @@ export class ReviewRequestService implements OnModuleInit {
         if (!smtp) return { ok: false, reason: 'SMTP not configured' };
         const composed = await this.composeEmail(cfg, order.email, order.firstName, order.code, order.id);
         if (!composed) return { ok: false, reason: 'compose failed' };
+        if (!composed.unsubscribeUrl) return { ok: false, reason: 'publicBaseUrl not configured — refusing to send without an unsubscribe link' };
         try {
-            const transporter = nodemailer.createTransport({
-                host: smtp.host, port: smtp.port, secure: smtp.port === 465,
-                auth: { user: smtp.user, pass: smtp.pass },
-            });
+            const transporter = this.transporter(smtp);
             await transporter.sendMail({
-                from: cfg.businessName ? `"${cfg.businessName}" <${smtp.from}>` : smtp.from,
+                from: cfg.businessName ? `"${cfg.businessName.replace(/"/g, "'")}" <${smtp.from}>` : smtp.from,
                 to: order.email,
                 replyTo: cfg.replyTo || undefined,
                 subject: composed.subject,
                 html: composed.html,
+                headers: {
+                    'List-Unsubscribe': `<${composed.unsubscribeUrl}>`,
+                    'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+                    Precedence: 'bulk',
+                },
             });
             return { ok: true };
         } catch (e: any) {
-            return { ok: false, reason: e.message };
+            try { this.transportCache?.t.close(); } catch { /* ignore */ }
+            this.transportCache = null;
+            return { ok: false, reason: String(e?.message || e).slice(0, 255) };
         }
+    }
+
+    private transportCache: { key: string; t: nodemailer.Transporter } | null = null;
+
+    /** One pooled transport per SMTP settings tuple, with timeouts (defaults are 2 min / 10 min). */
+    private transporter(smtp: { host: string; port: number; user?: string; pass?: string; from: string }): nodemailer.Transporter {
+        const key = [smtp.host, smtp.port, smtp.user || '', smtp.pass || ''].join('|');
+        if (this.transportCache?.key === key) return this.transportCache.t;
+        try { this.transportCache?.t.close(); } catch { /* ignore */ }
+        const t = nodemailer.createTransport({
+            host: smtp.host, port: smtp.port, secure: smtp.port === 465, requireTLS: smtp.port !== 465,
+            auth: smtp.user ? { user: smtp.user, pass: smtp.pass } : undefined,
+            pool: true, maxConnections: 2, maxMessages: 100,
+            connectionTimeout: 10_000, greetingTimeout: 10_000, socketTimeout: 30_000,
+        } as any);
+        this.transportCache = { key, t };
+        return t;
     }
 
     async logSend(orderId: number, orderCode: string, channelId: number, email: string, status: string, reason: string, reviewUrl: string) {
         await this.db.query(
             `INSERT INTO review_log (orderId, orderCode, channelId, email, status, reason, reviewUrl, createdAt)
              VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
-            [orderId, orderCode, channelId, email, status, reason || '', reviewUrl || ''],
+            [orderId, String(orderCode || '').slice(0, 32), channelId, String(email || '').slice(0, 255), status, String(reason || '').slice(0, 255), String(reviewUrl || '').slice(0, 500)],
         );
     }
 
@@ -468,28 +567,31 @@ export class ReviewRequestService implements OnModuleInit {
         const out = { sent: 0, skipped: 0, failed: 0, eligible: 0 };
         if (!cfg.enabled && !dryRun) return out;
 
-        // Candidate window: placed at least delayDays ago, but within a 3-day
-        // lookback so we don't rescan ancient history. Dedup does the rest.
+        // Candidate window: placed at least delayDays ago, within a 45-day
+        // lookback (slow carriers, worker downtime). Orders already invited are
+        // excluded in SQL so LIMIT counts real work. Backticks keep Vendure's
+        // camelCase columns intact on Postgres.
+        const states = ReviewRequestService.statesFor(cfg.triggerState);
         const orders = await this.db.query(
-            `SELECT o.id, o.code, o.state, o.subTotalWithTax, o.orderPlacedAt, c.emailAddress AS email, c.firstName
+            `SELECT o.id, o.code, o.state, o.\`subTotalWithTax\`, o.\`orderPlacedAt\`, c.\`emailAddress\` AS email, c.\`firstName\`
              FROM \`order\` o
-             JOIN customer c ON c.id = o.customerId
-             JOIN order_channels_channel occ ON occ.orderId = o.id AND occ.channelId = ?
-             WHERE o.state = ?
-               AND o.orderPlacedAt <= DATE_SUB(NOW(), INTERVAL ? DAY)
-               AND o.orderPlacedAt >  DATE_SUB(NOW(), INTERVAL ? DAY)
-               AND o.subTotalWithTax >= ?
-               AND c.emailAddress IS NOT NULL AND c.emailAddress <> ''
-             ORDER BY o.orderPlacedAt ASC
+             JOIN customer c ON c.id = o.\`customerId\`
+             JOIN order_channels_channel occ ON occ.\`orderId\` = o.id AND occ.\`channelId\` = ?
+             WHERE o.state IN (${states.map(() => '?').join(',')})
+               AND o.\`orderPlacedAt\` <= DATE_SUB(NOW(), INTERVAL ? DAY)
+               AND o.\`orderPlacedAt\` >  DATE_SUB(NOW(), INTERVAL ? DAY)
+               AND o.\`subTotalWithTax\` >= ?
+               AND c.\`emailAddress\` IS NOT NULL AND c.\`emailAddress\` <> ''
+               AND NOT EXISTS (SELECT 1 FROM review_log rl WHERE rl.orderId = o.id AND rl.status = 'sent')
+               AND NOT EXISTS (SELECT 1 FROM review_claim rc WHERE rc.orderId = o.id)
+             ORDER BY o.\`orderPlacedAt\` ASC
              LIMIT ?`,
-            [cfg.channelId, cfg.triggerState, cfg.delayDays, cfg.delayDays + 3, cfg.minOrderValuePence, cfg.maxPerRun],
+            [cfg.channelId, ...states, cfg.delayDays, cfg.delayDays + LOOKBACK_DAYS, cfg.minOrderValuePence, cfg.maxPerRun],
         ).catch((e: any) => { Logger.error(`candidate query failed: ${e.message}`, loggerCtx); return []; });
 
         for (const o of orders) {
+          try {
             const email = String(o.email).toLowerCase();
-            // already invited for this order?
-            const [prior] = await this.db.query(`SELECT id FROM review_log WHERE orderId = ? AND status = 'sent' LIMIT 1`, [o.id]);
-            if (prior) { continue; }
             // Log each skip reason at most once per order: the hourly scan
             // re-visits every order for its whole 3-day window, and repeating
             // identical skip rows only buries the audit trail.
@@ -519,16 +621,22 @@ export class ReviewRequestService implements OnModuleInit {
             }
             out.eligible++;
             if (dryRun) continue;
+            if (!(await this.claimOrder(Number(o.id), cfg.channelId))) continue; // another process has it
             const reviewUrl = buildReviewUrl(cfg.reviewUrlTemplate, cfg.trustpilotDomain);
             const res = await this.sendInvitation(cfg, { id: o.id, code: o.code, email, firstName: o.firstName });
             if (res.ok) { await this.logSend(o.id, o.code, cfg.channelId, email, 'sent', '', reviewUrl); out.sent++; }
-            else { await this.logSend(o.id, o.code, cfg.channelId, email, 'failed', res.reason || 'send failed', reviewUrl); out.failed++; }
+            else { await this.logSend(o.id, o.code, cfg.channelId, email, 'failed', res.reason || 'send failed', reviewUrl); await this.releaseClaim(Number(o.id)); out.failed++; }
+          } catch (e: any) {
+            Logger.error(`review invitation for order ${o?.code || o?.id} failed: ${e?.message || e}`, loggerCtx);
+            out.failed++;
+          }
         }
         return out;
     }
 
     async runAll(dryRun = false): Promise<any[]> {
-        const configs = await this.getAllConfigs();
+        // Every order also sits in the default channel: run the storefront channels first so their branding wins.
+        const configs = (await this.getAllConfigs()).slice().sort((a: any, b: any) => Number(a.channelCode === '__default_channel__') - Number(b.channelCode === '__default_channel__'));
         const results = [];
         for (const cfg of configs) {
             if (!cfg.enabled) continue;
@@ -540,9 +648,9 @@ export class ReviewRequestService implements OnModuleInit {
     /** Per-order invitation state for the admin order-detail panel. */
     async orderReviewStatus(orderId: number): Promise<any> {
         const [order] = await this.db.query(
-            `SELECT o.id, o.code, o.state, c.emailAddress AS email, c.firstName,
-                    (SELECT MIN(occ.channelId) FROM order_channels_channel occ WHERE occ.orderId = o.id) AS channelId
-             FROM \`order\` o JOIN customer c ON c.id = o.customerId WHERE o.id = ? LIMIT 1`, [orderId]).catch(() => []);
+            `SELECT o.id, o.code, o.state, c.\`emailAddress\` AS email, c.\`firstName\`,
+                    (SELECT occ.\`channelId\` FROM order_channels_channel occ JOIN channel ch ON ch.id = occ.\`channelId\` WHERE occ.\`orderId\` = o.id ORDER BY (ch.code = '__default_channel__') ASC, occ.\`channelId\` DESC LIMIT 1) AS channelId
+             FROM \`order\` o JOIN customer c ON c.id = o.\`customerId\` WHERE o.id = ? LIMIT 1`, [orderId]).catch(() => []);
         if (!order) return { found: false };
         const email = String(order.email || '').toLowerCase();
         const history = await this.db.query(
@@ -564,9 +672,9 @@ export class ReviewRequestService implements OnModuleInit {
      *  exclusions (an explicit staff decision). */
     async sendForOrder(orderId: number, force = false): Promise<{ ok: boolean; reason?: string }> {
         const [o] = await this.db.query(
-            `SELECT o.id, o.code, c.emailAddress AS email, c.firstName,
-                    (SELECT MIN(occ.channelId) FROM order_channels_channel occ WHERE occ.orderId = o.id) AS channelId
-             FROM \`order\` o JOIN customer c ON c.id = o.customerId WHERE o.id = ? LIMIT 1`, [orderId]).catch(() => []);
+            `SELECT o.id, o.code, c.\`emailAddress\` AS email, c.\`firstName\`,
+                    (SELECT occ.\`channelId\` FROM order_channels_channel occ JOIN channel ch ON ch.id = occ.\`channelId\` WHERE occ.\`orderId\` = o.id ORDER BY (ch.code = '__default_channel__') ASC, occ.\`channelId\` DESC LIMIT 1) AS channelId
+             FROM \`order\` o JOIN customer c ON c.id = o.\`customerId\` WHERE o.id = ? LIMIT 1`, [orderId]).catch(() => []);
         if (!o) return { ok: false, reason: 'Order not found' };
         const email = String(o.email || '').toLowerCase();
         if (!email) return { ok: false, reason: 'Order has no customer email' };
@@ -579,9 +687,11 @@ export class ReviewRequestService implements OnModuleInit {
         }
         const cfg = await this.getConfig(o.channelId);
         if (!cfg) return { ok: false, reason: 'No review configuration for this channel' };
+        if (!force && !(await this.claimOrder(Number(o.id), cfg.channelId))) return { ok: false, reason: 'An invitation for this order is already being sent' };
         const reviewUrl = buildReviewUrl(cfg.reviewUrlTemplate, cfg.trustpilotDomain);
         const res = await this.sendInvitation(cfg, { id: o.id, code: o.code, email, firstName: o.firstName });
         await this.logSend(o.id, o.code, cfg.channelId, email, res.ok ? 'sent' : 'failed', res.ok ? 'manual' : (res.reason || 'send failed'), reviewUrl);
+        if (!res.ok && !force) await this.releaseClaim(Number(o.id));
         return res;
     }
 
@@ -589,10 +699,10 @@ export class ReviewRequestService implements OnModuleInit {
     async stats(days = 30): Promise<any> {
         const d = Math.max(1, Math.min(days, 365));
         const [totals] = await this.db.query(
-            `SELECT SUM(status='sent') AS sent, SUM(status='skipped') AS skipped, SUM(status='failed') AS failed
+            `SELECT SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) AS sent, SUM(CASE WHEN status='skipped' THEN 1 ELSE 0 END) AS skipped, SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed
              FROM review_log WHERE createdAt > DATE_SUB(NOW(), INTERVAL ? DAY)`, [d]);
         const daily = await this.db.query(
-            `SELECT DATE(createdAt) AS day, SUM(status='sent') AS sent
+            `SELECT DATE(createdAt) AS day, SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) AS sent
              FROM review_log WHERE createdAt > DATE_SUB(NOW(), INTERVAL ? DAY) GROUP BY DATE(createdAt) ORDER BY day`, [d]);
         const [optouts] = await this.db.query(`SELECT COUNT(*) AS n FROM review_optout`);
         return { totals: totals || {}, daily, optOuts: Number(optouts?.n || 0) };

@@ -4,6 +4,48 @@ All notable changes to `@huloglobal/vendure-plugin-review-requests` are document
 here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.2] — 2026-09-28
+
+Reliability and security pass — no new features. A `review_claim` table
+and a `(status, createdAt)` index on `review_log` are created on boot.
+
+### Fixed
+- **Duplicate invitations.** An order is now claimed in `review_claim`
+  before the email goes out, so the hourly cron (worker), "Send due now"
+  (server) and the order page can no longer send twice for the same order;
+  a failed send releases the claim for the next run.
+- **Trigger state.** `PaymentSettled`/`Shipped` triggers matched only
+  orders still in exactly that state; an order that had moved on to
+  Delivered was skipped. The scan now matches every state at or beyond the
+  trigger, and the lookback window is 45 days (was 3) so slow deliveries
+  and worker downtime no longer lose invitations silently.
+- **Licence in the worker.** A key activated from the admin lives in the
+  server process; the worker now re-loads the stored key before each run,
+  so invitations keep going out after the evaluation ends.
+- **Multi-channel branding.** Storefront channels run before the default
+  channel and an order's own channel is used for its template and links
+  (the default channel always won before).
+- **Postgres.** Every camelCase column on Vendure tables is quoted;
+  `SUM(boolean)` replaced with `SUM(CASE …)`; `ADD COLUMN IF NOT EXISTS`
+  replaced with an information-schema check (MySQL 8 boots again).
+- **Unsubscribe.** The secret is no longer a shared literal: when none is
+  configured a per-install random secret is persisted; the token compare is
+  constant-time; the GET link shows a confirm button and the POST performs
+  the opt-out (mail scanners prefetch GETs), with RFC 8058
+  `List-Unsubscribe` headers on every email and a rate limit on the route.
+  Sending is refused when no `publicBaseUrl` (hence no unsubscribe link)
+  is configured.
+- Customer first names are HTML-escaped in the body; one pooled SMTP
+  transport with timeouts and `requireTLS` on 587 replaces a fresh
+  transport per message; a failure on one order no longer aborts the whole
+  run; log values are truncated to their columns.
+- Self-update requires SuperAdmin and a valid version string; config
+  saves are validated (ranges, lengths, known channels); the evaluation
+  lead request times out after 8 s.
+- Admin UI: the preview is sanitised once (not on every change-detection
+  cycle), "Send due now" is enabled during the evaluation, the copy button
+  copies a real `@`, timers are cleared on destroy.
+
 ## [0.15.1] — 2026-09-02
 
 ### Changed
