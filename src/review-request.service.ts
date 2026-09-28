@@ -6,7 +6,7 @@ import * as nodemailer from 'nodemailer';
 
 import { DEFAULT_CONFIG, ReviewChannelConfig, ReviewPluginOptions, TriggerState } from './types';
 import { DEFAULT_TEMPLATE, Template, renderTemplate, wrapEmail, escapeHtml } from './templates';
-import { buildReviewUrl, fetchRating, findBusinessUnitId, renderStars, TrustpilotRating } from './trustpilot';
+import { buildReviewUrl, fetchRating, findBusinessUnitId, formatScore, renderStars, TrustpilotRating } from './trustpilot';
 import { fetchGoogleRating } from './google';
 
 const loggerCtx = 'ReviewRequests';
@@ -94,8 +94,9 @@ export class ReviewRequestService implements OnModuleInit {
             CREATE TABLE IF NOT EXISTS review_template (
                 channelId INT PRIMARY KEY,
                 subject VARCHAR(255),
-                body TEXT
+                body MEDIUMTEXT
             )`);
+        await this.widenTemplateBody();
         await this.db.query(`
             CREATE TABLE IF NOT EXISTS review_log (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -139,6 +140,38 @@ export class ReviewRequestService implements OnModuleInit {
         if (Number(rows?.[0]?.n ?? rows?.[0]?.N ?? 0) > 0) return;
         try { await this.db.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`); }
         catch (e: any) { if (!/duplicate|exists/i.test(String(e?.message || ''))) throw e; }
+    }
+
+    /** `review_template.body` started life as TEXT (64 KB on MySQL/MariaDB) — a template with
+     *  inlined images silently truncated. Widen to MEDIUMTEXT once; Postgres TEXT is unbounded. */
+    private async widenTemplateBody(): Promise<void> {
+        if (this.db.dialect === 'postgres') return;
+        const rows: any[] = await this.db.query(
+            `SELECT DATA_TYPE AS dataType FROM information_schema.columns
+             WHERE table_schema = DATABASE() AND LOWER(table_name) = 'review_template' AND LOWER(column_name) = 'body'`,
+        ).catch(() => []);
+        const type = String(rows?.[0]?.dataType ?? rows?.[0]?.DATA_TYPE ?? '').toLowerCase();
+        if (type !== 'text' && type !== 'tinytext') return;
+        try { await this.db.query(`ALTER TABLE review_template MODIFY body MEDIUMTEXT`); }
+        catch (e: any) { Logger.warn(`could not widen review_template.body: ${e?.message}`, loggerCtx); }
+    }
+
+    /** Monthly housekeeping (worker): drop skipped/failed audit rows older than `months`
+     *  in id-ordered batches. 'sent' rows are kept — they drive dedup and cooldown. */
+    async pruneLog(months = 18, batch = 5000): Promise<number> {
+        let deleted = 0;
+        for (let round = 0; round < 400; round++) {
+            const rows: any[] = await this.db.query(
+                `SELECT id FROM review_log WHERE status <> 'sent' AND createdAt < DATE_SUB(NOW(), INTERVAL ? MONTH) ORDER BY id LIMIT ?`,
+                [months, batch],
+            );
+            if (!rows.length) break;
+            const ids = rows.map((r: any) => Number(r.id));
+            await this.db.query(`DELETE FROM review_log WHERE id IN (${ids.map(() => '?').join(',')})`, ids);
+            deleted += ids.length;
+            if (ids.length < batch) break;
+        }
+        return deleted;
     }
 
     /** Claim an order for sending; false when another process already has it. */
@@ -216,7 +249,28 @@ export class ReviewRequestService implements OnModuleInit {
              c.reviewMode || 'service', c.productReviewUrlTemplate || ''],
             { conflictColumns: ['channelId'] },
         );
+        this.invalidatePending();
     }
+
+    // ── Pending (dry-run) summary, memoised ─────────────────────────────
+    // `GET /stats` used to run the full candidate scan on every Overview /
+    // Exclusions tab open. The result is held for 60 s and dropped after
+    // anything that changes eligibility (a real run, a manual send, a config
+    // or exclusion change), and concurrent callers share one scan.
+    private pendingCache: { at: number; value: any[] } | null = null;
+    private pendingInFlight: Promise<any[]> | null = null;
+    private static readonly PENDING_TTL_MS = 60_000;
+
+    async pendingSummary(): Promise<any[]> {
+        if (this.pendingCache && Date.now() - this.pendingCache.at < ReviewRequestService.PENDING_TTL_MS) return this.pendingCache.value;
+        if (this.pendingInFlight) return this.pendingInFlight;
+        this.pendingInFlight = this.runAll(true)
+            .then(value => { this.pendingCache = { at: Date.now(), value }; return value; })
+            .finally(() => { this.pendingInFlight = null; });
+        return this.pendingInFlight;
+    }
+
+    invalidatePending(): void { this.pendingCache = null; }
 
     // ── Template ────────────────────────────────────────────────────────
     async getTemplate(channelId: number): Promise<Template & { isDefault: boolean }> {
@@ -245,9 +299,11 @@ export class ReviewRequestService implements OnModuleInit {
         const v = String(value || '').trim().toLowerCase();
         if (!v) throw new Error('empty value');
         await this.db.query(`INSERT INTO review_exclusion (type, value, note, createdAt) VALUES (?, ?, ?, NOW())`, [t, v, note || '']);
+        this.invalidatePending();
     }
     async removeExclusion(id: number): Promise<void> {
         await this.db.query(`DELETE FROM review_exclusion WHERE id = ?`, [id]);
+        this.invalidatePending();
     }
 
     /** Is this email excluded, and via what? Used by the admin "check". */
@@ -354,11 +410,17 @@ export class ReviewRequestService implements OnModuleInit {
         const e = String(email || '').toLowerCase();
         if (!(await this.optOutTokenValid(e, token))) return false;
         await this.db.query(`INSERT IGNORE INTO review_optout (email, createdAt) VALUES (?, NOW())`, [e]);
+        this.invalidatePending();
         return true;
     }
 
-    // ── Review rating (Trustpilot or Google, cached in memory 6h) ───────
+    // ── Review rating (Trustpilot or Google, cached in memory) ──────────
+    // A successful lookup is held for 6 h; a failed one (bad key, outage,
+    // timeout) for 10 min so a transient error does not blank the star
+    // block out of every email until the next restart.
     private ratingCache = new Map<string, { rating: TrustpilotRating | null; at: number }>();
+    private static readonly RATING_OK_TTL_MS = 6 * 3600_000;
+    private static readonly RATING_FAIL_TTL_MS = 10 * 60_000;
 
     /** Which review platform a config targets, inferred from its link. */
     platformOf(cfg: ReviewChannelConfig): 'trustpilot' | 'google' | 'other' {
@@ -372,12 +434,18 @@ export class ReviewRequestService implements OnModuleInit {
         return p === 'google' ? 'Google' : p === 'trustpilot' ? 'Trustpilot' : (cfg.businessName || 'us');
     }
 
-    async getRating(cfg: ReviewChannelConfig): Promise<TrustpilotRating | null> {
+    /** Live rating for a channel. `cache: false` (the admin "check" button, which posts
+     *  whatever key/domain is in the form) neither reads nor writes the shared cache. */
+    async getRating(cfg: ReviewChannelConfig, opts: { cache?: boolean } = {}): Promise<TrustpilotRating | null> {
         const platform = this.platformOf(cfg);
         if (!cfg.trustpilotApiKey || !cfg.trustpilotDomain) return null;
+        const useCache = opts.cache !== false;
         const cacheKey = `${platform}|${cfg.trustpilotDomain}|${cfg.trustpilotBusinessUnitId}`;
-        const hit = this.ratingCache.get(cacheKey);
-        if (hit && Date.now() - hit.at < 6 * 3600_000) return hit.rating;
+        if (useCache) {
+            const hit = this.ratingCache.get(cacheKey);
+            const ttl = hit?.rating ? ReviewRequestService.RATING_OK_TTL_MS : ReviewRequestService.RATING_FAIL_TTL_MS;
+            if (hit && Date.now() - hit.at < ttl) return hit.rating;
+        }
 
         let rating: TrustpilotRating | null = null;
         if (platform === 'google') {
@@ -388,7 +456,10 @@ export class ReviewRequestService implements OnModuleInit {
             if (!unitId) unitId = (await findBusinessUnitId(cfg.trustpilotDomain, cfg.trustpilotApiKey)) || '';
             rating = unitId ? await fetchRating(unitId, cfg.trustpilotApiKey) : null;
         }
-        this.ratingCache.set(cacheKey, { rating, at: Date.now() });
+        if (useCache) {
+            if (this.ratingCache.size > 200) this.ratingCache.clear();
+            this.ratingCache.set(cacheKey, { rating, at: Date.now() });
+        }
         return rating;
     }
 
@@ -413,7 +484,7 @@ export class ReviewRequestService implements OnModuleInit {
         const platformLabel = isGoogle ? 'Google Place ID' : isTrustpilot ? 'Trustpilot domain' : 'identifier';
         const message = !domain ? `Enter your ${platformLabel} first.`
             : !apiKey ? 'Review link ready. Add an API key to also show your star rating in emails.'
-            : rating ? `Connected — ${rating.trustScore.toFixed(1)}★ from ${rating.numberOfReviews.toLocaleString()} reviews.`
+            : rating ? `Connected — ${formatScore(rating)}★ from ${rating.numberOfReviews.toLocaleString()} reviews.`
             : (isGoogle || isTrustpilot) ? `Couldn't read a rating — check the ${platformLabel} + API key.`
             : 'Review link ready (this platform has no live-rating lookup).';
         return { ok: !!reviewUrl, reviewUrl, businessUnitId, rating, message };
@@ -477,9 +548,9 @@ export class ReviewRequestService implements OnModuleInit {
         const wantService = cfg.reviewMode === 'service' || cfg.reviewMode === 'both';
         const wantProduct = cfg.reviewMode === 'product' || cfg.reviewMode === 'both';
 
-        const ratingBlock = (wantService && rating)
+        const ratingBlock = (wantService && rating && Number.isFinite(rating.trustScore))
             ? `<div style="text-align:center;margin:0 0 18px">${renderStars(rating.stars)}` +
-              `<div style="font-size:13px;color:#475569;margin-top:6px">Rated <strong>${rating.trustScore.toFixed(1)}</strong> by ${rating.numberOfReviews.toLocaleString()} customers on ${this.platformName(cfg)}</div></div>`
+              `<div style="font-size:13px;color:#475569;margin-top:6px">Rated <strong>${formatScore(rating)}</strong> by ${rating.numberOfReviews.toLocaleString()} customers on ${this.platformName(cfg)}</div></div>`
             : '';
         const reviewButton = wantService
             ? `<p style="margin:0 0 22px;text-align:center"><a href="${reviewUrl}" style="display:inline-block;background:#00b67a;color:#fff;text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:8px">★ Leave a review</a></p>`
@@ -557,6 +628,39 @@ export class ReviewRequestService implements OnModuleInit {
     }
 
     // ── Eligibility scan (the cron's engine) ────────────────────────────
+    /** Opt-out + exclusion + cooldown sets for a batch of (lowercased) emails: three
+     *  IN (…) queries regardless of batch size. Same pattern as `searchCustomers`. */
+    private async batchEligibility(emails: string[], cooldownDays: number): Promise<{ excluded: Set<string>; cooldown: Set<string> }> {
+        const excluded = new Set<string>();
+        const cooldown = new Set<string>();
+        if (!emails.length) return { excluded, cooldown };
+        const domains = [...new Set(emails.map(e => e.split('@')[1]).filter(Boolean))];
+        const emailPh = emails.map(() => '?').join(',');
+        const domPh = domains.length ? domains.map(() => '?').join(',') : "''";
+        const optRows: any[] = await this.db.query(`SELECT email FROM review_optout WHERE email IN (${emailPh})`, emails);
+        for (const r of optRows) excluded.add(String(r.email || '').toLowerCase());
+        const exRows: any[] = await this.db.query(
+            `SELECT type, value FROM review_exclusion
+             WHERE (type='email' AND value IN (${emailPh})) OR (type='email_domain' AND value IN (${domPh}))`,
+            [...emails, ...domains],
+        );
+        const exDomains = new Set<string>();
+        for (const r of exRows) {
+            const v = String(r.value || '').toLowerCase();
+            if (r.type === 'email_domain') exDomains.add(v); else excluded.add(v);
+        }
+        if (exDomains.size) for (const e of emails) if (exDomains.has(e.split('@')[1] || '')) excluded.add(e);
+        if (cooldownDays > 0) {
+            const cdRows: any[] = await this.db.query(
+                `SELECT DISTINCT email FROM review_log
+                 WHERE status = 'sent' AND createdAt > DATE_SUB(NOW(), INTERVAL ? DAY) AND email IN (${emailPh})`,
+                [cooldownDays, ...emails],
+            );
+            for (const r of cdRows) cooldown.add(String(r.email || '').toLowerCase());
+        }
+        return { excluded, cooldown };
+    }
+
     /**
      * Find orders placed ~delayDays ago that reached the trigger state, aren't
      * excluded / in cooldown / already invited, and send the invitation.
@@ -589,12 +693,23 @@ export class ReviewRequestService implements OnModuleInit {
             [cfg.channelId, ...states, cfg.delayDays, cfg.delayDays + LOOKBACK_DAYS, cfg.minOrderValuePence, cfg.maxPerRun],
         ).catch((e: any) => { Logger.error(`candidate query failed: ${e.message}`, loggerCtx); return []; });
 
+        // Opt-out, exclusion and cooldown are resolved for the whole batch in three
+        // IN (…) queries (the per-candidate lookups used to cost 3 round trips per order).
+        const emails: string[] = [...new Set<string>(orders.map((o: any) => String(o.email || '').toLowerCase()).filter(Boolean))];
+        let gate: { excluded: Set<string>; cooldown: Set<string> };
+        try { gate = await this.batchEligibility(emails, cfg.cooldownDays); }
+        catch (e: any) {
+            // Fail closed: without the exclusion/cooldown sets we could email people who asked us not to.
+            Logger.error(`eligibility lookup failed for channel ${cfg.channelId}: ${e?.message || e}`, loggerCtx);
+            return out;
+        }
+
         for (const o of orders) {
           try {
             const email = String(o.email).toLowerCase();
             // Log each skip reason at most once per order: the hourly scan
-            // re-visits every order for its whole 3-day window, and repeating
-            // identical skip rows only buries the audit trail.
+            // re-visits every order for its whole lookback window, and
+            // repeating identical skip rows only buries the audit trail.
             const logSkipOnce = async (reason: string) => {
                 if (dryRun) return;
                 const [already] = await this.db.query(
@@ -604,20 +719,14 @@ export class ReviewRequestService implements OnModuleInit {
                 if (!already) await this.logSend(o.id, o.code, cfg.channelId, email, 'skipped', reason, '');
             };
             // excluded / opted out?
-            if (await this.isExcluded(email)) {
+            if (gate.excluded.has(email)) {
                 await logSkipOnce('excluded');
                 out.skipped++; continue;
             }
             // cooldown: invited (any order) within cooldownDays?
-            if (cfg.cooldownDays > 0) {
-                const [recent] = await this.db.query(
-                    `SELECT id FROM review_log WHERE email = ? AND status = 'sent' AND createdAt > DATE_SUB(NOW(), INTERVAL ? DAY) LIMIT 1`,
-                    [email, cfg.cooldownDays],
-                );
-                if (recent) {
-                    await logSkipOnce('cooldown');
-                    out.skipped++; continue;
-                }
+            if (gate.cooldown.has(email)) {
+                await logSkipOnce('cooldown');
+                out.skipped++; continue;
             }
             out.eligible++;
             if (dryRun) continue;
@@ -642,6 +751,7 @@ export class ReviewRequestService implements OnModuleInit {
             if (!cfg.enabled) continue;
             results.push({ channelId: cfg.channelId, channelCode: cfg.channelCode, ...(await this.runChannel(cfg, dryRun)) });
         }
+        if (!dryRun) this.invalidatePending();
         return results;
     }
 
@@ -692,6 +802,7 @@ export class ReviewRequestService implements OnModuleInit {
         const res = await this.sendInvitation(cfg, { id: o.id, code: o.code, email, firstName: o.firstName });
         await this.logSend(o.id, o.code, cfg.channelId, email, res.ok ? 'sent' : 'failed', res.ok ? 'manual' : (res.reason || 'send failed'), reviewUrl);
         if (!res.ok && !force) await this.releaseClaim(Number(o.id));
+        this.invalidatePending();
         return res;
     }
 

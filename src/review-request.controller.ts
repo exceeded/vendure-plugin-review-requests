@@ -6,7 +6,7 @@ import { ReviewRequestService } from './review-request.service';
 import { ReviewRequestPlugin } from './plugin';
 import { ReviewChannelConfig } from './types';
 import { renderTemplate, wrapEmail } from './templates';
-import { buildReviewUrl, renderStars } from './trustpilot';
+import { buildReviewUrl, formatScore, renderStars } from './trustpilot';
 import { performSelfUpdate, selfUpdateEnv, evalInstanceId, describeLicence, RateLimiter } from '@huloglobal/vendure-licence-sdk';
 
 function denyUnlessAdmin(ctx: RequestContext, res: Response, write: boolean | 'superadmin'): boolean {
@@ -259,7 +259,8 @@ export class ReviewRequestController {
     @Post('trustpilot/check')
     async tpCheck(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: ReviewChannelConfig) {
         if (denyUnlessAdmin(ctx, res, false)) return;
-        const rating = await this.service.getRating(body as ReviewChannelConfig);
+        // The form posts whatever key/domain is typed: probe live, never through the shared cache.
+        const rating = await this.service.getRating(body as ReviewChannelConfig, { cache: false });
         return res.json({ ok: !!rating, rating, reviewUrl: buildReviewUrl(body.reviewUrlTemplate, body.trustpilotDomain) });
     }
 
@@ -274,7 +275,8 @@ export class ReviewRequestController {
     async stats(@Ctx() ctx: RequestContext, @Res() res: Response, @Query('days') days?: string) {
         if (denyUnlessAdmin(ctx, res, false)) return;
         const stats = await this.service.stats(Number(days || 30));
-        const pending = await this.service.runAll(true).catch(() => []);
+        // Memoised for 60 s in the service — the dry-run scan used to run on every tab open.
+        const pending = await this.service.pendingSummary().catch(() => []);
         return res.json({ ...stats, pending });
     }
     @Get('log')
@@ -294,6 +296,8 @@ export class ReviewRequestController {
     }
 
     // ── Admin: templates ───────────────────────────────────────────────
+    private static readonly MAX_SUBJECT_CHARS = 255;          // review_template.subject VARCHAR(255)
+    private static readonly MAX_BODY_BYTES = 4 * 1024 * 1024; // review_template.body MEDIUMTEXT (16 MB) with headroom
     @Get('template')
     async getTemplate(@Ctx() ctx: RequestContext, @Res() res: Response, @Query('channelId') channelId?: string) {
         if (denyUnlessAdmin(ctx, res, false)) return;
@@ -302,8 +306,20 @@ export class ReviewRequestController {
     @Post('template')
     async saveTemplate(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: { channelId: number; subject: string; body: string; reset?: boolean }) {
         if (denyUnlessAdmin(ctx, res, true)) return;
-        if (body.reset) await this.service.resetTemplate(Number(body.channelId));
-        else await this.service.saveTemplate(Number(body.channelId), body.subject || '', body.body || '');
+        const channelId = Number(body?.channelId);
+        if (!Number.isInteger(channelId) || channelId <= 0) return res.status(400).json({ ok: false, error: 'bad-channel', message: 'Unknown channel.' });
+        if (body?.reset) { await this.service.resetTemplate(channelId); return res.json({ ok: true }); }
+        const subject = String(body?.subject ?? '');
+        const html = String(body?.body ?? '');
+        if (subject.length > ReviewRequestController.MAX_SUBJECT_CHARS) {
+            return res.status(400).json({ ok: false, error: 'subject-too-long', message: `The subject is ${subject.length} characters — the limit is ${ReviewRequestController.MAX_SUBJECT_CHARS}.` });
+        }
+        const bytes = Buffer.byteLength(html, 'utf8');
+        if (bytes > ReviewRequestController.MAX_BODY_BYTES) {
+            return res.status(400).json({ ok: false, error: 'body-too-large', message: `The email body is ${(bytes / 1024).toFixed(0)} KB — the limit is ${ReviewRequestController.MAX_BODY_BYTES / (1024 * 1024)} MB. Host large images instead of inlining them.` });
+        }
+        try { await this.service.saveTemplate(channelId, subject, html); }
+        catch (e: any) { return res.status(500).json({ ok: false, error: 'save-failed', message: String(e?.message || 'Save failed').slice(0, 300) }); }
         return res.json({ ok: true });
     }
     @Post('template/preview')
@@ -315,8 +331,8 @@ export class ReviewRequestController {
         const wantService = cfg.reviewMode === 'service' || cfg.reviewMode === 'both';
         const wantProduct = cfg.reviewMode === 'product' || cfg.reviewMode === 'both';
         const reviewUrl = buildReviewUrl(cfg.reviewUrlTemplate, cfg.trustpilotDomain);
-        const ratingBlock = (wantService && rating)
-            ? `<div style="text-align:center;margin:0 0 18px">${renderStars(rating.stars)}<div style="font-size:13px;color:#475569;margin-top:6px">Rated <strong>${rating.trustScore.toFixed(1)}</strong> by ${rating.numberOfReviews.toLocaleString()} customers on ${this.service.platformName(cfg)}</div></div>`
+        const ratingBlock = (wantService && rating && Number.isFinite(rating.trustScore))
+            ? `<div style="text-align:center;margin:0 0 18px">${renderStars(rating.stars)}<div style="font-size:13px;color:#475569;margin-top:6px">Rated <strong>${formatScore(rating)}</strong> by ${rating.numberOfReviews.toLocaleString()} customers on ${this.service.platformName(cfg)}</div></div>`
             : '';
         const reviewButton = wantService
             ? `<p style="margin:0 0 22px;text-align:center"><a href="${reviewUrl}" style="display:inline-block;background:#00b67a;color:#fff;text-decoration:none;font-weight:700;font-size:16px;padding:14px 28px;border-radius:8px">★ Leave a review</a></p>`

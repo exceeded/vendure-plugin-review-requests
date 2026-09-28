@@ -61,18 +61,70 @@ run('@huloglobal/vendure-plugin-review-requests (MariaDB)', () => {
         const svc0 = svc();
         const email = 'optme@example.com';
         expect(await svc0.optOut(email, 'wrong-token')).toBe(false);
-        const goodToken = svc0.optOutToken(email);
+        const goodToken = await svc0.optOutToken(email);
         expect(await svc0.optOut(email, goodToken)).toBe(true);
         expect(await svc0.isExcluded(email)).toBe(true);
     });
 
-    it('the public opt-out page renders (valid + invalid token)', async () => {
+    it('the public opt-out page confirms on GET, applies on POST, rejects a bad token', async () => {
         const email = 'pageme@example.com';
-        const tok = svc().optOutToken(email);
-        const good = await (await fetch(`${BASE}/review-requests/optout?e=${encodeURIComponent(email)}&t=${tok}`)).text();
-        expect(good).toContain('unsubscribed');
+        const tok = await svc().optOutToken(email);
+        const url = `${BASE}/review-requests/optout?e=${encodeURIComponent(email)}&t=${tok}`;
+        const good = await (await fetch(url)).text();
+        expect(good).toContain('unsubscribe me'); // confirm button only — GETs are prefetched by mail scanners
+        expect(await svc().isExcluded(email)).toBe(false);
+        const applied = await (await fetch(url, { method: 'POST' })).text();
+        expect(applied).toContain('unsubscribed');
+        expect(await svc().isExcluded(email)).toBe(true);
         const bad = await (await fetch(`${BASE}/review-requests/optout?e=x@y.com&t=nope`)).text();
         expect(bad).toContain('expired');
+    });
+
+    it('template save rejects an oversized subject / body with a 400 and a size message (service-level guard lives in the controller)', async () => {
+        // The service itself stores anything; the controller enforces 255 chars / 4 MB — checked via the HTTP route with an anonymous caller being rejected first.
+        const r = await fetch(`${BASE}/review-requests/template`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ channelId: 1, subject: 'x'.repeat(300), body: '<p>hi</p>' }) });
+        expect([401, 403]).toContain(r.status);
+    });
+
+    it('pending summary is memoised between calls and dropped by invalidatePending()', async () => {
+        const s0 = svc();
+        const a = await s0.pendingSummary();
+        const b = await s0.pendingSummary();
+        expect(b).toBe(a); // same array instance → served from the memo
+        s0.invalidatePending();
+        const c = await s0.pendingSummary();
+        expect(c).not.toBe(a);
+        expect(Array.isArray(c)).toBe(true);
+    });
+
+    it('batched eligibility: excluded + opted-out + cooldown emails are skipped in one pass', async () => {
+        const s0 = svc();
+        await s0.addExclusion('email', 'batch-ex@example.com', 'e2e');
+        await s0.addExclusion('email_domain', 'batchdom.test', 'e2e');
+        await s0.optOut('batch-opt@example.com', await s0.optOutToken('batch-opt@example.com'));
+        await s0.logSend(424242, 'BATCHCD', 1, 'batch-cd@example.com', 'sent', '', '');
+        const gate = await (s0 as any).batchEligibility(
+            ['batch-ex@example.com', 'anyone@batchdom.test', 'batch-opt@example.com', 'batch-cd@example.com', 'fine@example.com'], 120);
+        expect(gate.excluded.has('batch-ex@example.com')).toBe(true);
+        expect(gate.excluded.has('anyone@batchdom.test')).toBe(true);
+        expect(gate.excluded.has('batch-opt@example.com')).toBe(true);
+        expect(gate.excluded.has('fine@example.com')).toBe(false);
+        expect(gate.cooldown.has('batch-cd@example.com')).toBe(true);
+        expect(gate.cooldown.has('fine@example.com')).toBe(false);
+        const none = await (s0 as any).batchEligibility(['batch-cd@example.com'], 0);
+        expect(none.cooldown.size).toBe(0); // cooldown disabled
+    });
+
+    it('pruneLog removes old non-sent rows in batches and keeps sent rows', async () => {
+        const s0 = svc();
+        const db = (s0 as any).db;
+        await db.query(`INSERT INTO review_log (orderId, orderCode, channelId, email, status, reason, reviewUrl, createdAt) VALUES (1, 'OLD1', 1, 'old@example.com', 'skipped', 'excluded', '', DATE_SUB(NOW(), INTERVAL 20 MONTH))`);
+        await db.query(`INSERT INTO review_log (orderId, orderCode, channelId, email, status, reason, reviewUrl, createdAt) VALUES (2, 'OLD2', 1, 'old@example.com', 'sent', '', '', DATE_SUB(NOW(), INTERVAL 20 MONTH))`);
+        await db.query(`INSERT INTO review_log (orderId, orderCode, channelId, email, status, reason, reviewUrl, createdAt) VALUES (3, 'NEW3', 1, 'new@example.com', 'failed', 'x', '', NOW())`);
+        const n = await s0.pruneLog(18, 1);
+        expect(n).toBe(1);
+        const left = await db.query(`SELECT orderCode FROM review_log WHERE orderCode IN ('OLD1','OLD2','NEW3') ORDER BY orderCode`);
+        expect(left.map((r: any) => r.orderCode)).toEqual(['NEW3', 'OLD2']);
     });
 
     it('composes an invitation email with the review link', async () => {

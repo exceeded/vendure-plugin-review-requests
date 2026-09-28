@@ -43,4 +43,18 @@ export class ReviewCrons {
             this.runInFlight = false;
         }
     }
+
+    /** Monthly log housekeeping (worker only): skipped/failed audit rows older than
+     *  18 months go, 5 000 at a time. 'sent' rows stay — dedup and cooldown read them. */
+    @Cron(CronExpression.EVERY_1ST_DAY_OF_MONTH_AT_MIDNIGHT)
+    async pruneLog() {
+        if (this.processContext.isServer) return;
+        if (getOptions().disableCron) return;
+        try {
+            const n = await this.service.pruneLog(18, 5000);
+            if (n > 0) Logger.info(`Pruned ${n} review_log row(s) older than 18 months`, loggerCtx);
+        } catch (e: any) {
+            Logger.error(`review_log prune failed: ${e?.message || e}`, loggerCtx);
+        }
+    }
 }

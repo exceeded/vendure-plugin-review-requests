@@ -1,5 +1,5 @@
 import * as https from 'https';
-import { TrustpilotRating } from './trustpilot';
+import { normaliseRating, TrustpilotRating } from './trustpilot';
 
 /**
  * Google reviews live rating via the Google Places API (Place Details).
@@ -30,10 +30,7 @@ export async function fetchGoogleRating(placeId: string, apiKey: string): Promis
             `&fields=rating,user_ratings_total&key=${encodeURIComponent(apiKey)}`,
         );
         if (j?.status !== 'OK' || !j?.result) return null;
-        const trustScore = Number(j.result.rating || 0);
-        const numberOfReviews = Number(j.result.user_ratings_total || 0);
-        if (!trustScore && !numberOfReviews) return null;
-        return { stars: Math.round(trustScore), trustScore, numberOfReviews, fetchedAt: new Date().toISOString() };
+        return normaliseRating(Number(j.result.rating || 0), NaN, Number(j.result.user_ratings_total || 0));
     } catch {
         return null;
     }

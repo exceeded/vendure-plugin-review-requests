@@ -4,6 +4,42 @@ All notable changes to `@huloglobal/vendure-plugin-review-requests` are document
 here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.3] — 2026-09-28
+
+Optimisation pass — no new features, no new tables. `review_template.body`
+is widened from TEXT to MEDIUMTEXT on MySQL/MariaDB at boot (Postgres TEXT is
+already unbounded).
+
+### Changed
+- **Scan cost.** The hourly scan resolves opt-outs, exclusions and
+  cooldown for the whole candidate batch in three `IN (…)` queries instead
+  of three round trips per order. Skip logging is unchanged (still once
+  per order and reason). A failed lookup aborts the channel run rather
+  than sending past the exclusion list.
+- **Overview / Exclusions tabs.** `GET /stats` no longer runs the full
+  dry-run scan on every open: the pending summary is memoised for 60 s,
+  shared between concurrent callers, and dropped after a real run, a
+  manual send, or a config / exclusion / opt-out change.
+- **Rating cache.** A failed Trustpilot / Google lookup is remembered for
+  10 minutes (a success still for 6 h), so a transient outage no longer
+  blanks the star block until the next restart. The admin "check" button
+  probes live and never writes the key/domain typed in the form into the
+  shared cache. A rating with a non-numeric score can no longer throw
+  mid-send (`Number.isFinite` guard, `formatScore`).
+- **Templates.** `review_template.body` is MEDIUMTEXT (16 MB; was 64 KB
+  — templates with inlined images were silently truncated). Saving now
+  returns `400` with the size in the message when the subject exceeds 255
+  characters or the body 4 MB, and a `500` with the database message
+  instead of a bare "Save failed"; the admin UI shows that message.
+- **Log retention.** Monthly (worker only) `review_log` rows with
+  `status <> 'sent'` older than 18 months are deleted in batches of 5 000.
+  `sent` rows are kept — dedup and cooldown depend on them.
+- **Postgres.** A corpus test (`tests/pg-corpus.test.ts`, skipped unless
+  `HULO_PG_URL` is set) extracts every SQL statement in `src/`, translates
+  it with the dialect adapter and runs it against PostgreSQL 17 with
+  quoted-camelCase stand-ins for the Vendure tables. 43 statements, all
+  passing.
+
 ## [0.15.2] — 2026-09-28
 
 Reliability and security pass — no new features. A `review_claim` table

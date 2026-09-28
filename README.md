@@ -56,6 +56,11 @@ email, hit **Send test**, and switch the channel on.
 > set `optOutSecret` to keep unsubscribe links valid across reinstalls
 > (otherwise a per-install secret is generated and stored); the trigger
 > matches orders at or beyond the chosen state within a 45-day window.
+>
+> **Since 0.15.3:** the email body may be up to 4 MB (the column is widened
+> to MEDIUMTEXT on first boot) and the subject up to 255 characters — larger
+> saves are refused with a `400` that says so. Skipped/failed audit rows
+> older than 18 months are pruned monthly on the worker; sent rows are kept.
 
 ## Getting your Trustpilot bits (all free)
 
@@ -82,8 +87,9 @@ licence** from https://huloglobal.com/vendure-plugins/review-requests/.
 
 ## Compatibility
 
-Vendure `>=3.5 <4`. MySQL / MariaDB. Tables are created on boot. Sends via your
-SMTP (`SMTP_SERVER` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_FROM`,
+Vendure `>=3.5 <4`. MySQL / MariaDB / PostgreSQL (every statement is checked
+against PostgreSQL 17 by the corpus test in `tests/`). Tables are created on
+boot. Sends via your SMTP (`SMTP_SERVER` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_FROM`,
 or pass `smtp` to `init()`).
 
 ## License

@@ -54,14 +54,30 @@ export async function fetchRating(businessUnitId: string, apiKey: string): Promi
     if (!businessUnitId || !apiKey) return null;
     try {
         const j = await getJson(`https://api.trustpilot.com/v1/business-units/${encodeURIComponent(businessUnitId)}?apikey=${encodeURIComponent(apiKey)}`);
-        const trustScore = Number(j?.score?.trustScore ?? j?.trustScore ?? 0);
-        const stars = Number(j?.score?.stars ?? Math.round(trustScore));
-        const numberOfReviews = Number(j?.numberOfReviews?.total ?? j?.numberOfReviews ?? 0);
-        if (!trustScore && !numberOfReviews) return null;
-        return { stars, trustScore, numberOfReviews, fetchedAt: new Date().toISOString() };
+        return normaliseRating(
+            Number(j?.score?.trustScore ?? j?.trustScore ?? 0),
+            Number(j?.score?.stars ?? NaN),
+            Number(j?.numberOfReviews?.total ?? j?.numberOfReviews ?? 0),
+        );
     } catch {
         return null;
     }
+}
+
+/** Coerce an API response into a rating with finite numbers, or null when there is
+ *  nothing to show. A NaN `trustScore` used to reach `toFixed` and throw mid-send. */
+export function normaliseRating(trustScore: number, stars: number, numberOfReviews: number): TrustpilotRating | null {
+    const score = Number.isFinite(trustScore) ? trustScore : 0;
+    const reviews = Number.isFinite(numberOfReviews) ? Math.max(0, Math.round(numberOfReviews)) : 0;
+    if (!score && !reviews) return null;
+    const s = Number.isFinite(stars) ? stars : Math.round(score);
+    return { stars: Math.max(0, Math.min(5, s)), trustScore: score, numberOfReviews: reviews, fetchedAt: new Date().toISOString() };
+}
+
+/** `trustScore` with one decimal — never throws on a malformed rating. */
+export function formatScore(rating: { trustScore: number } | null | undefined): string {
+    const n = Number(rating?.trustScore);
+    return Number.isFinite(n) ? n.toFixed(1) : '–';
 }
 
 /** Inline Trustpilot-green star row for the email (no external images). */
