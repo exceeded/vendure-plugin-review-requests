@@ -2,12 +2,17 @@ import { Body, Controller, Delete, Get, Param, Post, Query, Req, Res } from '@ne
 import type { Request, Response } from 'express';
 import { Ctx, Permission, RequestContext } from '@vendure/core';
 
-import { ReviewRequestService } from './review-request.service';
+import { ReviewRequestService, PLUGIN_SHORT_ID, PREMIUM_FEATURES } from './review-request.service';
 import { ReviewRequestPlugin } from './plugin';
 import { ReviewChannelConfig } from './types';
 import { renderTemplate, wrapEmail } from './templates';
 import { buildReviewUrl, formatScore, renderStars } from './trustpilot';
-import { performSelfUpdate, selfUpdateEnv, evalInstanceId, describeLicence, RateLimiter } from '@huloglobal/vendure-licence-sdk';
+import {
+    performSelfUpdate, selfUpdateEnv, evalInstanceId, describeLicence, RateLimiter,
+    licenceLifecycleNotice, formatStat,
+} from '@huloglobal/vendure-licence-sdk';
+
+const BUY_URL = `https://elite.charity/licence/buy/${PLUGIN_SHORT_ID}`;
 
 function denyUnlessAdmin(ctx: RequestContext, res: Response, write: boolean | 'superadmin'): boolean {
     const needed = write === 'superadmin' ? [Permission.SuperAdmin] : write ? [Permission.UpdateSettings] : [Permission.ReadSettings];
@@ -53,10 +58,23 @@ export class ReviewRequestController {
     }
 
     private static limiter = new RateLimiter({ capacity: 30, windowMs: 60_000 });
-    private limited(req: Request, res: Response): boolean {
+    private limited(req: Request, res: Response, bucket = 'optout'): boolean {
         const ip = String(req.ip || '');
-        if (ip && !ReviewRequestController.limiter.allow(`optout|${ip}`)) { res.status(429).type('text').send('Too many requests'); return true; }
+        if (ip && !ReviewRequestController.limiter.allow(`${bucket}|${ip}`)) { res.status(429).type('text').send('Too many requests'); return true; }
         return false;
+    }
+
+    // ── Public: review-link click tracking (signed redirect) ───────────
+    /** The review button in every real invitation points here. A valid token
+     *  stamps `review_log.clickedAt` (first click only) and redirects to the
+     *  review page; anything else gets a plain "link expired" page. */
+    @Get('r/:token')
+    async reviewLinkClick(@Req() req: Request, @Res() res: Response, @Param('token') token: string) {
+        if (this.limited(req, res, 'click')) return;
+        res.setHeader('cache-control', 'no-store');
+        const url = await this.service.recordClick(String(token || '')).catch(() => null);
+        if (!url) return res.status(404).type('html').send(this.optoutHtml(false, 'Link expired', 'This review link is no longer valid. You can still leave a review on the business\'s review page directly.'));
+        return res.redirect(302, url);
     }
 
     // ── Admin: meta / licence ──────────────────────────────────────────
@@ -65,17 +83,95 @@ export class ReviewRequestController {
         if (denyUnlessAdmin(ctx, res, false)) return;
         const updater = ReviewRequestPlugin.getUpdateChecker();
         const licence = ReviewRequestPlugin.getLicenceStatus();
+        const summary = describeLicence(licence);
+        const evalState = ReviewRequestPlugin.getEvalState();
+        const recent = await this.service.recentStats(3).catch(() => []);
         return res.json({
             name: ReviewRequestPlugin.getPackageName(),
             version: ReviewRequestPlugin.getPackageVersion(),
             update: updater ? updater.getStatus() : null,
             selfUpdate: selfUpdateEnv(),
             licensed: !!licence?.valid,
-            licence: describeLicence(licence),
+            licence: summary,
             licenceMessage: licence?.valid ? '' : (licence?.message || 'No licence key configured'),
-            tier: licence?.valid ? 'paid' : (ReviewRequestPlugin.getEvalState()?.active ? 'trial' : 'free'),
-            eval: ReviewRequestPlugin.getEvalState(),
+            tier: ReviewRequestPlugin.tier(),
+            eval: evalState,
+            notice: licenceLifecycleNotice(summary, evalState, PLUGIN_SHORT_ID),
+            premiumFeatures: PREMIUM_FEATURES,
+            recentStats: recent.map(s => ({ label: s.label, value: formatStat(s) })),
+            buyUrl: BUY_URL,
         });
+    }
+
+    // ── Admin: setup checklist, dashboard widget, weekly report ───────
+    @Get('setup')
+    async setup(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (denyUnlessAdmin(ctx, res, false)) return;
+        return res.json(await this.service.setupChecklist());
+    }
+
+    /** Three headline figures for the last 7 days — light enough for the dashboard. */
+    @Get('widget')
+    async widget(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (denyUnlessAdmin(ctx, res, false)) return;
+        const to = new Date();
+        const s = await this.service.usageStats(new Date(to.getTime() - 7 * 86_400_000), to);
+        const n = (v: number) => Math.round(v).toLocaleString('en-GB');
+        const notice = licenceLifecycleNotice(describeLicence(ReviewRequestPlugin.getLicenceStatus()), ReviewRequestPlugin.getEvalState(), PLUGIN_SHORT_ID);
+        return res.json({
+            tier: ReviewRequestPlugin.tier(),
+            notice: notice ? { kind: notice.kind, message: notice.message, daysLeft: notice.daysLeft } : null,
+            stats: [
+                { label: 'Invitations sent', value: n(s.invitesSent) },
+                { label: 'Review links clicked', value: n(s.reviewLinkClicks) },
+                { label: 'Opt-outs', value: n(s.optOuts) },
+            ],
+            route: '/extensions/review-requests',
+        });
+    }
+
+    @Get('digest/settings')
+    async digestSettings(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (denyUnlessAdmin(ctx, res, false)) return;
+        const d = this.service.getDigest();
+        if (!d) return res.status(503).json({ error: 'digest-unavailable' });
+        return res.json(await d.settings());
+    }
+
+    @Post('digest/settings')
+    async digestUpdate(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
+        if (denyUnlessAdmin(ctx, res, true)) return;
+        const d = this.service.getDigest();
+        if (!d) return res.status(503).json({ error: 'digest-unavailable' });
+        const patch: { enabled?: boolean; recipient?: string | null } = {};
+        if (typeof body?.enabled === 'boolean') patch.enabled = body.enabled;
+        if (body && 'recipient' in body) patch.recipient = body.recipient === null ? null : String(body.recipient ?? '').slice(0, 320);
+        try { return res.json(await d.updateSettings(patch)); }
+        catch (e: any) { return res.status(400).json({ error: 'bad-request', message: e?.message || 'Invalid settings' }); }
+    }
+
+    @Post('digest/send-test')
+    async digestSendTest(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
+        if (denyUnlessAdmin(ctx, res, true)) return;
+        const d = this.service.getDigest();
+        if (!d) return res.status(503).json({ error: 'digest-unavailable' });
+        const to = String(body?.to || '').trim().slice(0, 320);
+        if (to && !/^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/.test(to)) return res.status(400).json({ error: 'bad-request', message: 'Enter a valid email address' });
+        const r = await d.sendNow(to || null);
+        return res.json({ sent: r.sent, to: r.to, reason: r.reason, subject: r.preview.subject });
+    }
+
+    /** This week's report as HTML (opened in a new tab from the admin). */
+    @Get('digest/preview')
+    async digestPreview(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (denyUnlessAdmin(ctx, res, false)) return;
+        try {
+            const mail = await this.service.digestPreview();
+            res.setHeader('cache-control', 'no-store');
+            return res.type('html').send(mail.html);
+        } catch (e: any) {
+            return res.status(500).type('text').send(`Could not build the report: ${String(e?.message || e).slice(0, 300)}`);
+        }
     }
 
     /** Review panel on the admin order-detail page. */
@@ -92,7 +188,7 @@ export class ReviewRequestController {
     async sendOrder(@Ctx() ctx: RequestContext, @Res() res: Response, @Param('orderId') orderId: string, @Body() body: any) {
         if (denyUnlessAdmin(ctx, res, true)) return;
         if (!ReviewRequestPlugin.hasPremiumAccess()) {
-            return res.status(402).json({ error: 'licence_required', message: 'Sending review requests requires a licence (or an active evaluation).' });
+            return res.status(402).json({ error: 'licence_required', message: 'Sending review requests requires a licence (or an active evaluation).', buyUrl: BUY_URL });
         }
         const id = Number(orderId);
         if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'bad-order-id' });
@@ -217,6 +313,8 @@ export class ReviewRequestController {
                 signal: AbortSignal.timeout(8_000),
             });
             if (!resp.ok) return res.status(502).json({ error: 'upstream', status: resp.status });
+            // Remembered as the weekly report's fallback recipient (after a channel reply-to and the licence customer).
+            await this.service.getPrefs().set('eval.leadEmail', email.toLowerCase());
             return res.json({ ok: true });
         } catch {
             return res.status(502).json({ error: 'unreachable' });
@@ -290,7 +388,7 @@ export class ReviewRequestController {
     async run(@Ctx() ctx: RequestContext, @Res() res: Response) {
         if (denyUnlessAdmin(ctx, res, true)) return;
         if (!ReviewRequestPlugin.hasPremiumAccess()) {
-            return res.status(402).json({ error: 'licence_required', message: 'Your evaluation has ended — sending review requests now requires a licence.' });
+            return res.status(402).json({ error: 'licence_required', message: 'Your evaluation has ended — sending review requests now requires a licence.', buyUrl: BUY_URL });
         }
         return res.json({ ok: true, results: await this.service.runAll(false) });
     }

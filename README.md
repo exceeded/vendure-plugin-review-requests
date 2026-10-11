@@ -22,8 +22,14 @@ and can show your live star rating pulled from the free Trustpilot API.
 - **No spam.** Deduped per order, plus a per-customer **cooldown** (default 120
   days) and a minimum order value.
 - **Editable email** with live preview + test-send, per channel.
-- **Multi-tab admin**: Overview (sent / eligible / opt-outs / failed, live
-  rating), Settings, Email, Exclusions, Activity log.
+- **Click tracking.** The review button goes through a signed redirect, so
+  the Overview shows how many invitations were opened and the click-through
+  rate — not just how many were sent.
+- **Multi-tab admin**: Overview (set-up checklist, sent / clicked / eligible /
+  opt-outs / failed, live rating), Settings (including the weekly report),
+  Email, Exclusions, Activity log.
+- **Weekly report** by email every Monday, a **set-up checklist** on the
+  first screen and a **dashboard widget** — see below.
 
 ## Install
 
@@ -48,8 +54,11 @@ Admin UI:
 ReviewRequestPlugin.uiExtensions,   // in your compileUiExtensions extensions array
 ```
 
-Then open **Review requests** in the admin, set your Trustpilot domain, timing and
-email, hit **Send test**, and switch the channel on.
+This registers the **Review Requests** page (Marketing section of the admin
+nav, `/admin/extensions/review-requests`), the review panel on the order
+detail page and the dashboard widget. Open the page, follow the set-up
+checklist at the top (SMTP, email, review page, timing, first send), hit
+**Send test**, and switch the channel on.
 
 
 > **Since 0.15.2:** invitations need `publicBaseUrl` (the unsubscribe link);
@@ -61,6 +70,11 @@ email, hit **Send test**, and switch the channel on.
 > to MEDIUMTEXT on first boot) and the subject up to 255 characters — larger
 > saves are refused with a `400` that says so. Skipped/failed audit rows
 > older than 18 months are pruned monthly on the worker; sent rows are kept.
+>
+> **Since 0.16.0:** the review button goes through a signed click redirect on
+> `publicBaseUrl`, the worker sends a weekly report (Settings → Weekly
+> report), and the admin nav gains a Review Requests entry plus a dashboard
+> widget. Needs `@huloglobal/vendure-licence-sdk` 0.15.0.
 
 ## Getting your Trustpilot bits (all free)
 
@@ -79,6 +93,42 @@ email, hit **Send test**, and switch the channel on.
 | Cooldown (days) | 120 | don't re-ask the same customer |
 | Max per run | 200 | hourly throttle |
 | Review link template | Trustpilot evaluate URL | `{domain}` is substituted |
+
+## Weekly report, setup checklist and dashboard widget
+
+**Weekly report.** Every Monday at 08:00 (server-local time) the worker
+emails one summary of last week — invitations sent, review links clicked,
+orders skipped, failures and opt-outs, each against the previous week — plus
+up to three next steps while the set-up checklist is incomplete. It is sent
+through the same SMTP as the invitations (`SMTP_*` env or the `smtp` option),
+so it needs nothing extra; without SMTP nothing is sent and the Settings card
+says why. The recipient defaults to the first channel reply-to, then the
+licence customer email, then the address given to "Email me before it ends";
+change it or switch the report off under **Settings → Weekly report**, where
+**Send me a test** and **Preview** show exactly what goes out. Sent once per
+install, on the worker, and never more than once a week even with several
+worker replicas.
+
+**Set-up checklist.** The Overview opens with the five things that have to be
+true before invitations go out: SMTP configured, invitation email saved,
+business name and review page set, a channel switched on, first invitation
+sent. Each row links to the right tab; **Hide** puts it away until an item
+comes undone, and it disappears on its own once everything is done.
+
+**Dashboard widget.** Dashboard → **Add widget** → **Review Requests**: the
+last 7 days' invitations sent, review links clicked and opt-outs, the licence
+notice when a trial or key is about to end, and a link to the page.
+
+**Click tracking.** The review button in every real invitation goes through
+`GET /review-requests/r/<token>` on your `publicBaseUrl` — a signed, rate-
+limited redirect that records the first click on that invitation and sends the
+customer straight on to Trustpilot / Google. Previews and test emails link
+directly. The Overview shows **Clicked (30d)** and the click-through rate.
+
+The licence server receives the same numbers (`invitesSent`,
+`reviewLinkClicks`, `invitesSkipped`, `invitesFailed`, `optOuts`, last 30
+days) through the evaluation client and the daily heartbeat — counts only,
+never customer data.
 
 ## Licensing
 

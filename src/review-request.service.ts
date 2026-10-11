@@ -1,4 +1,7 @@
-import { LicenceStore, adapterFor, PurchaseClaimClient } from '@huloglobal/vendure-licence-sdk';
+import {
+    LicenceStore, adapterFor, PurchaseClaimClient, PluginPrefs, WeeklyDigest, composeDigest,
+    DigestInput, DigestMail, DigestStat, DigestTip, LicenceSummary, EvaluationState,
+} from '@huloglobal/vendure-licence-sdk';
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Logger, TransactionalConnection } from '@vendure/core';
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
@@ -8,11 +11,48 @@ import { DEFAULT_CONFIG, ReviewChannelConfig, ReviewPluginOptions, TriggerState 
 import { DEFAULT_TEMPLATE, Template, renderTemplate, wrapEmail, escapeHtml } from './templates';
 import { buildReviewUrl, fetchRating, findBusinessUnitId, formatScore, renderStars, TrustpilotRating } from './trustpilot';
 import { fetchGoogleRating } from './google';
+import { parseClickToken, signClickToken } from './click-token';
 
 const loggerCtx = 'ReviewRequests';
 
 /** Days beyond `delayDays` an order stays a candidate (slow carriers, worker downtime). */
 const LOOKBACK_DAYS = 45;
+
+/** Package short id — pref namespace, buy URL, digest id. */
+export const PLUGIN_SHORT_ID = 'vendure-plugin-review-requests';
+export const PLUGIN_DISPLAY_NAME = 'Review Requests';
+/** What the free tier loses — shown in the admin banners and the weekly report. */
+export const PREMIUM_FEATURES = [
+    'Scheduled sending (hourly cron)',
+    'Send-now for any order',
+    'Trustpilot and Google rating box',
+    'Exclusions and opt-out handling',
+];
+
+/** Usage-stat keys reported to the licence server (eval + heartbeat) and
+ *  rendered in the weekly report. Numbers only, never personal data. */
+export type UsageStatKey = 'invitesSent' | 'reviewLinkClicks' | 'invitesSkipped' | 'invitesFailed' | 'optOuts';
+export const USAGE_STAT_LABELS: Record<UsageStatKey, string> = {
+    invitesSent: 'review invitations sent',
+    reviewLinkClicks: 'review links clicked',
+    invitesSkipped: 'orders skipped (excluded, cooldown)',
+    invitesFailed: 'invitations failed',
+    optOuts: 'customers opted out',
+};
+const USAGE_STAT_ORDER: UsageStatKey[] = ['invitesSent', 'reviewLinkClicks', 'invitesSkipped', 'invitesFailed', 'optOuts'];
+
+export interface SetupItem { key: string; label: string; done: boolean; hint: string; tab?: string; url?: string }
+
+/** Hooks the plugin class supplies so this file never imports it. */
+export interface EngagementHooks {
+    tier: () => 'paid' | 'trial' | 'free';
+    licence: () => LicenceSummary | null;
+    evalState: () => EvaluationState | null;
+    /** Re-load an admin-activated key in the worker before building a report. */
+    refresh?: () => Promise<void>;
+}
+
+const DAY_MS = 86_400_000;
 
 @Injectable()
 export class ReviewRequestService implements OnModuleInit {
@@ -50,15 +90,172 @@ export class ReviewRequestService implements OnModuleInit {
         await this.licenceStore.clear('vendure-plugin-review-requests');
     }
 
-    /** Anonymous usage aggregates for the evaluation drip (numbers only). */
+    // ── Merchant engagement: prefs, usage stats, weekly report ──────────
+    private prefs = new PluginPrefs((sql, params, opts) => this.db.query(sql, params, opts), PLUGIN_SHORT_ID);
+    getPrefs(): PluginPrefs { return this.prefs; }
+
+    private hooks: EngagementHooks | null = null;
+    private digest: WeeklyDigest | null = null;
+
+    /** Wire the tier/licence hooks and build the weekly report scheduler.
+     *  Called once from the plugin constructor; `startDigest()` is the
+     *  worker-only step. */
+    initEngagement(hooks: EngagementHooks): WeeklyDigest {
+        this.hooks = hooks;
+        if (!this.digest) {
+            this.digest = new WeeklyDigest({
+                pluginId: PLUGIN_SHORT_ID,
+                pluginName: PLUGIN_DISPLAY_NAME,
+                prefs: this.prefs,
+                collect: (from, to) => this.collectDigest(from, to),
+                send: (to, mail) => this.sendDigest(to, mail),
+                defaultRecipient: () => this.defaultDigestRecipient(),
+            });
+        }
+        return this.digest;
+    }
+
+    getDigest(): WeeklyDigest | null { return this.digest; }
+
+    /** Worker only (the plugin checks ProcessContext + disableCron). */
+    startDigest(): void { this.digest?.start(); }
+
+    /** Anonymous usage aggregates for the last 30 days (evaluation drip +
+     *  heartbeat). Numbers only, never personal data. */
     async evalStats(): Promise<Record<string, number>> {
-        const [row] = await this.db.query(`SELECT COUNT(*) AS n FROM review_log WHERE status = 'sent'`);
-        return { invitesSent: Number(row?.n || 0) };
+        const to = new Date();
+        return this.usageStats(new Date(to.getTime() - 30 * DAY_MS), to);
+    }
+
+    /** Counts for the window `[from, to)`: invitations by outcome (by the row's
+     *  createdAt), review-link clicks (by clickedAt) and opt-outs (by createdAt). */
+    async usageStats(from: Date, to: Date): Promise<Record<UsageStatKey, number>> {
+        const out: Record<UsageStatKey, number> = { invitesSent: 0, reviewLinkClicks: 0, invitesSkipped: 0, invitesFailed: 0, optOuts: 0 };
+        try {
+            const [r] = await this.db.query(
+                `SELECT SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) AS sent,
+                        SUM(CASE WHEN status='skipped' THEN 1 ELSE 0 END) AS skipped,
+                        SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed
+                 FROM review_log WHERE createdAt >= ? AND createdAt < ?`, [from, to]);
+            out.invitesSent = Number(r?.sent || 0); out.invitesSkipped = Number(r?.skipped || 0); out.invitesFailed = Number(r?.failed || 0);
+            const [c] = await this.db.query(`SELECT COUNT(*) AS n FROM review_log WHERE clickedAt >= ? AND clickedAt < ?`, [from, to]);
+            out.reviewLinkClicks = Number(c?.n || 0);
+            const [o] = await this.db.query(`SELECT COUNT(*) AS n FROM review_optout WHERE createdAt >= ? AND createdAt < ?`, [from, to]);
+            out.optOuts = Number(o?.n || 0);
+        } catch (e: any) {
+            Logger.warn(`usage stats unavailable: ${e?.message}`, loggerCtx);
+        }
+        return out;
+    }
+
+    /** The 30-day stats as labelled digest rows, non-zero first-N in key order. */
+    async recentStats(limit = 3): Promise<DigestStat[]> {
+        const s = await this.evalStats();
+        return USAGE_STAT_ORDER
+            .filter(k => Number(s[k] || 0) > 0)
+            .slice(0, limit)
+            .map(k => ({ key: k, label: USAGE_STAT_LABELS[k], value: Number(s[k] || 0), format: 'count' as const }));
+    }
+
+    /** Everything the weekly report needs for `[from, to)` plus the previous week. */
+    async collectDigest(from: Date, to: Date): Promise<Omit<DigestInput, 'periodStart' | 'periodEnd' | 'pluginName' | 'shortId'>> {
+        await this.hooks?.refresh?.().catch(() => undefined);
+        const span = to.getTime() - from.getTime();
+        const [cur, prev, setup, configs] = await Promise.all([
+            this.usageStats(from, to),
+            this.usageStats(new Date(from.getTime() - span), from),
+            this.setupChecklist(),
+            this.getAllConfigs().catch(() => [] as ReviewChannelConfig[]),
+        ]);
+        const stats: DigestStat[] = USAGE_STAT_ORDER.map(k => ({ key: k, label: USAGE_STAT_LABELS[k], value: cur[k], previous: prev[k], format: 'count' as const }));
+        const adminUrl = this.adminUrl();
+        const tips: DigestTip[] = setup.items.filter(i => !i.done).slice(0, 3)
+            .map(i => ({ title: i.label, body: i.hint, url: i.url || adminUrl || undefined, linkLabel: i.url ? 'Read the docs' : undefined }));
+        const dflt = configs.find(c => c.channelCode === '__default_channel__') || configs[0];
+        const storeName = (dflt?.businessName || '').trim() || null;
+        return {
+            stats, tips, adminUrl, storeName,
+            tier: this.hooks?.tier() ?? 'free',
+            licence: this.hooks?.licence() ?? null,
+            evalState: this.hooks?.evalState() ?? null,
+            premiumFeatures: PREMIUM_FEATURES,
+        };
+    }
+
+    /** This week's report, rendered (the admin "Preview" button). */
+    async digestPreview(): Promise<DigestMail> {
+        const to = new Date();
+        const from = new Date(to.getTime() - 7 * DAY_MS);
+        const partial = await this.collectDigest(from, to);
+        return composeDigest({ ...partial, pluginName: PLUGIN_DISPLAY_NAME, shortId: PLUGIN_SHORT_ID, periodStart: from, periodEnd: to });
+    }
+
+    adminUrl(): string | null {
+        const base = (this.options.publicBaseUrl || '').replace(/\/$/, '');
+        return base ? `${base}/admin/extensions/review-requests` : null;
+    }
+
+    /** Through the plugin's own SMTP (the `smtp` option or the SMTP_* env). */
+    private async sendDigest(to: string, mail: DigestMail): Promise<void> {
+        const smtp = this.smtp();
+        if (!smtp) throw new Error('SMTP not configured — set SMTP_SERVER/SMTP_USER or pass smtp to init()');
+        await this.transporter(smtp).sendMail({ from: smtp.from, to, subject: mail.subject, text: mail.text, html: mail.html });
+    }
+
+    /** Merchant address, in order: a channel's reply-to, the licence customer,
+     *  the trial-reminder address the admin gave us. */
+    private async defaultDigestRecipient(): Promise<string | null> {
+        try {
+            const configs = await this.getAllConfigs();
+            const ordered = configs.slice().sort((a, b) => Number(b.enabled) - Number(a.enabled));
+            const replyTo = ordered.map(c => (c.replyTo || '').trim()).find(Boolean);
+            if (replyTo) return replyTo;
+        } catch { /* fall through */ }
+        const customer = this.hooks?.licence()?.customer;
+        if (customer) return customer;
+        return this.prefs.get('eval.leadEmail');
+    }
+
+    /** What still needs doing before the plugin earns its keep. Real checks
+     *  against config, templates and the log — no guesses. */
+    async setupChecklist(): Promise<{ items: SetupItem[]; complete: boolean }> {
+        const configs = await this.getAllConfigs().catch(() => [] as ReviewChannelConfig[]);
+        const templates: any[] = await this.db.query(`SELECT channelId FROM review_template`).catch(() => []);
+        const sentRows: any[] = await this.db.query(`SELECT id FROM review_log WHERE status = 'sent' LIMIT 1`).catch(() => []);
+        const items: SetupItem[] = [
+            {
+                key: 'smtp', label: 'Connect your SMTP', done: !!this.smtp(),
+                hint: 'Set SMTP_SERVER, SMTP_USER, SMTP_PASSWORD and SMTP_FROM in the host environment, or pass smtp to ReviewRequestPlugin.init(). Nothing can be sent until this is in place.',
+                url: 'https://huloglobal.com/vendure-plugins/review-requests/#install',
+            },
+            {
+                key: 'template', label: 'Save your invitation email', done: templates.length > 0,
+                hint: 'Email tab: put the invitation in your own words and save it. The default works, but a personal note gets more reviews.',
+                tab: 'email',
+            },
+            {
+                key: 'platform', label: 'Set your business name and review page', done: configs.some(c => !!(c.businessName || '').trim() && !!(c.trustpilotDomain || '').trim()),
+                hint: 'Settings tab: enter the business name shown in the email and your Trustpilot domain or Google Place ID, then press Connect to build the review link.',
+                tab: 'settings',
+            },
+            {
+                key: 'timing', label: 'Choose when to ask and switch sending on', done: configs.some(c => c.enabled),
+                hint: 'Settings tab: pick the delay after the order and the trigger state, then flip the channel switch to "Sending on". The hourly scan only runs for enabled channels.',
+                tab: 'settings',
+            },
+            {
+                key: 'firstSend', label: 'Send your first invitation', done: sentRows.length > 0,
+                hint: 'Overview tab: press "Send due now", or open any delivered order in the admin and use the Review invitation panel.',
+                tab: 'overview',
+            },
+        ];
+        return { items, complete: items.every(i => i.done) };
     }
 
     async onModuleInit() {
         try { await this.ensureSchema(); }
         catch (e: any) { Logger.error(`Schema init failed: ${e.message}`, loggerCtx); }
+        await this.prefs.ensureTable();
     }
 
     // ── Schema ──────────────────────────────────────────────────────────
@@ -108,12 +305,18 @@ export class ReviewRequestService implements OnModuleInit {
                 reason VARCHAR(255),
                 reviewUrl VARCHAR(500),
                 createdAt DATETIME NOT NULL,
+                clickedAt DATETIME NULL,
                 INDEX idx_rl_order (orderId),
                 INDEX idx_rl_email (email, createdAt),
                 INDEX idx_rl_created (createdAt),
                 INDEX idx_rl_status (status, createdAt)
             )`);
-        for (const ddl of ['CREATE INDEX IF NOT EXISTS idx_rl_status ON review_log (status, createdAt)']) { try { await this.db.query(ddl); } catch { /* exists */ } }
+        // Review-link click tracking (0.16.0): first click per invitation.
+        await this.addColumnIfMissing('review_log', 'clickedAt', 'DATETIME NULL');
+        for (const ddl of [
+            'CREATE INDEX IF NOT EXISTS idx_rl_status ON review_log (status, createdAt)',
+            'CREATE INDEX IF NOT EXISTS idx_rl_clicked ON review_log (clickedAt)',
+        ]) { try { await this.db.query(ddl); } catch { /* exists */ } }
         await this.db.query(`
             CREATE TABLE IF NOT EXISTS review_exclusion (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -540,9 +743,30 @@ export class ReviewRequestService implements OnModuleInit {
         </div>`;
     }
 
-    async composeEmail(cfg: ReviewChannelConfig, to: string, firstName: string, orderCode: string, orderId = 0): Promise<{ subject: string; html: string; unsubscribeUrl: string } | null> {
+    // ── Review-link click tracking ──────────────────────────────────────
+    /** The signed redirect for one invitation, or '' without a public base URL. */
+    private async clickUrl(logId: number): Promise<string> {
+        const base = (this.options.publicBaseUrl || '').replace(/\/$/, '');
+        if (!base || !logId) return '';
+        return `${base}/review-requests/r/${signClickToken(await this.optOutSecret(), logId)}`;
+    }
+
+    /** Verify a click token, stamp `clickedAt` on first click and return the
+     *  review URL to redirect to — `null` for a bad token or an unknown row. */
+    async recordClick(token: string): Promise<string | null> {
+        const logId = parseClickToken(await this.optOutSecret(), token);
+        if (!logId) return null;
+        const [row] = await this.db.query(`SELECT reviewUrl FROM review_log WHERE id = ? LIMIT 1`, [logId]).catch(() => []);
+        const url = String(row?.reviewUrl || '');
+        if (!/^https?:\/\//i.test(url)) return null;
+        await this.db.query(`UPDATE review_log SET clickedAt = NOW() WHERE id = ? AND clickedAt IS NULL`, [logId]).catch(() => undefined);
+        return url;
+    }
+
+    async composeEmail(cfg: ReviewChannelConfig, to: string, firstName: string, orderCode: string, orderId = 0, logId = 0): Promise<{ subject: string; html: string; unsubscribeUrl: string } | null> {
         const tpl = await this.getTemplate(cfg.channelId);
-        const reviewUrl = buildReviewUrl(cfg.reviewUrlTemplate, cfg.trustpilotDomain);
+        // Real sends (a log row exists) link through the signed click redirect; previews and tests link straight to the review page.
+        const reviewUrl = (await this.clickUrl(logId)) || buildReviewUrl(cfg.reviewUrlTemplate, cfg.trustpilotDomain);
         const rating = await this.getRating(cfg);
         const businessName = cfg.businessName || cfg.trustpilotDomain || 'us';
         const wantService = cfg.reviewMode === 'service' || cfg.reviewMode === 'both';
@@ -574,10 +798,10 @@ export class ReviewRequestService implements OnModuleInit {
         return { subject, html, unsubscribeUrl };
     }
 
-    async sendInvitation(cfg: ReviewChannelConfig, order: { id: number; code: string; email: string; firstName: string }): Promise<{ ok: boolean; reason?: string }> {
+    async sendInvitation(cfg: ReviewChannelConfig, order: { id: number; code: string; email: string; firstName: string }, logId = 0): Promise<{ ok: boolean; reason?: string }> {
         const smtp = this.smtp();
         if (!smtp) return { ok: false, reason: 'SMTP not configured' };
-        const composed = await this.composeEmail(cfg, order.email, order.firstName, order.code, order.id);
+        const composed = await this.composeEmail(cfg, order.email, order.firstName, order.code, order.id, logId);
         if (!composed) return { ok: false, reason: 'compose failed' };
         if (!composed.unsubscribeUrl) return { ok: false, reason: 'publicBaseUrl not configured — refusing to send without an unsubscribe link' };
         try {
@@ -619,12 +843,34 @@ export class ReviewRequestService implements OnModuleInit {
         return t;
     }
 
-    async logSend(orderId: number, orderCode: string, channelId: number, email: string, status: string, reason: string, reviewUrl: string) {
-        await this.db.query(
+    /** Append a log row; returns its id (0 when the driver gives none). A real
+     *  send writes its row as `sending` first so the email can carry the signed
+     *  click link for that row, then `finishLog` sets the outcome. */
+    async logSend(orderId: number, orderCode: string, channelId: number, email: string, status: string, reason: string, reviewUrl: string): Promise<number> {
+        const r = await this.db.query(
             `INSERT INTO review_log (orderId, orderCode, channelId, email, status, reason, reviewUrl, createdAt)
              VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
             [orderId, String(orderCode || '').slice(0, 32), channelId, String(email || '').slice(0, 255), status, String(reason || '').slice(0, 255), String(reviewUrl || '').slice(0, 500)],
+            { needInsertId: true },
         );
+        return Number(r?.insertId || 0);
+    }
+
+    /** Outcome for the `sending` row — by id, or by order when the driver returned no insert id. */
+    private async finishLog(logId: number, orderId: number, status: 'sent' | 'failed', reason: string): Promise<void> {
+        const r = String(reason || '').slice(0, 255);
+        if (logId) await this.db.query(`UPDATE review_log SET status = ?, reason = ? WHERE id = ?`, [status, r, logId]);
+        else await this.db.query(`UPDATE review_log SET status = ?, reason = ? WHERE orderId = ? AND status = 'sending'`, [status, r, orderId]);
+    }
+
+    /** Send one invitation with its audit row written first (so the email links
+     *  through the click redirect), then record the outcome on that row. */
+    private async sendLogged(cfg: ReviewChannelConfig, o: { id: number; code: string; email: string; firstName: string }, manual: boolean): Promise<{ ok: boolean; reason?: string }> {
+        const reviewUrl = buildReviewUrl(cfg.reviewUrlTemplate, cfg.trustpilotDomain);
+        const logId = await this.logSend(o.id, o.code, cfg.channelId, o.email, 'sending', manual ? 'manual' : '', reviewUrl);
+        const res = await this.sendInvitation(cfg, o, logId);
+        await this.finishLog(logId, o.id, res.ok ? 'sent' : 'failed', res.ok ? (manual ? 'manual' : '') : (res.reason || 'send failed'));
+        return res;
     }
 
     // ── Eligibility scan (the cron's engine) ────────────────────────────
@@ -731,10 +977,9 @@ export class ReviewRequestService implements OnModuleInit {
             out.eligible++;
             if (dryRun) continue;
             if (!(await this.claimOrder(Number(o.id), cfg.channelId))) continue; // another process has it
-            const reviewUrl = buildReviewUrl(cfg.reviewUrlTemplate, cfg.trustpilotDomain);
-            const res = await this.sendInvitation(cfg, { id: o.id, code: o.code, email, firstName: o.firstName });
-            if (res.ok) { await this.logSend(o.id, o.code, cfg.channelId, email, 'sent', '', reviewUrl); out.sent++; }
-            else { await this.logSend(o.id, o.code, cfg.channelId, email, 'failed', res.reason || 'send failed', reviewUrl); await this.releaseClaim(Number(o.id)); out.failed++; }
+            const res = await this.sendLogged(cfg, { id: o.id, code: o.code, email, firstName: o.firstName }, false);
+            if (res.ok) out.sent++;
+            else { await this.releaseClaim(Number(o.id)); out.failed++; }
           } catch (e: any) {
             Logger.error(`review invitation for order ${o?.code || o?.id} failed: ${e?.message || e}`, loggerCtx);
             out.failed++;
@@ -798,9 +1043,7 @@ export class ReviewRequestService implements OnModuleInit {
         const cfg = await this.getConfig(o.channelId);
         if (!cfg) return { ok: false, reason: 'No review configuration for this channel' };
         if (!force && !(await this.claimOrder(Number(o.id), cfg.channelId))) return { ok: false, reason: 'An invitation for this order is already being sent' };
-        const reviewUrl = buildReviewUrl(cfg.reviewUrlTemplate, cfg.trustpilotDomain);
-        const res = await this.sendInvitation(cfg, { id: o.id, code: o.code, email, firstName: o.firstName });
-        await this.logSend(o.id, o.code, cfg.channelId, email, res.ok ? 'sent' : 'failed', res.ok ? 'manual' : (res.reason || 'send failed'), reviewUrl);
+        const res = await this.sendLogged(cfg, { id: o.id, code: o.code, email, firstName: o.firstName }, true);
         if (!res.ok && !force) await this.releaseClaim(Number(o.id));
         this.invalidatePending();
         return res;
@@ -809,8 +1052,10 @@ export class ReviewRequestService implements OnModuleInit {
     // ── Stats + log for the admin ───────────────────────────────────────
     async stats(days = 30): Promise<any> {
         const d = Math.max(1, Math.min(days, 365));
+        // `clicked` counts invitations from this window whose review link was opened — the click-through denominator is `sent`.
         const [totals] = await this.db.query(
-            `SELECT SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) AS sent, SUM(CASE WHEN status='skipped' THEN 1 ELSE 0 END) AS skipped, SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed
+            `SELECT SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) AS sent, SUM(CASE WHEN status='skipped' THEN 1 ELSE 0 END) AS skipped, SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
+                    SUM(CASE WHEN clickedAt IS NOT NULL THEN 1 ELSE 0 END) AS clicked
              FROM review_log WHERE createdAt > DATE_SUB(NOW(), INTERVAL ? DAY)`, [d]);
         const daily = await this.db.query(
             `SELECT DATE(createdAt) AS day, SUM(CASE WHEN status='sent' THEN 1 ELSE 0 END) AS sent

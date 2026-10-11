@@ -56,6 +56,7 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
         </vdr-page-block>
 
         <vdr-page-block *ngIf="meta && meta.licensed">
+            <div class="notice-strip" *ngIf="meta.notice?.message">{{ meta.notice.message }}</div>
             <div class="update-banner" style="margin-top:8px">
                 <div><strong>✅ Licensed</strong> — {{ licenceLabel() }}</div>
                 <div class="actions eval-actions">
@@ -69,6 +70,7 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
             </div>
         </vdr-page-block>
         <vdr-page-block *ngIf="meta && !meta.licensed">
+            <div class="notice-strip" *ngIf="meta.notice?.message">{{ meta.notice.message }}</div>
             <div class="update-banner major" *ngIf="meta.tier === 'trial'">
                 <div>
                     <strong>⏳ Full-featured evaluation</strong> —
@@ -77,6 +79,8 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
                     </ng-container>
                     <ng-template #evalNoClock>everything is enabled, scheduled sending included.</ng-template>
                     Afterwards the plugin drops to the free tier (configure, preview + test-send).
+                    <div class="banner-extra" *ngIf="meta.premiumFeatures?.length">Included now: {{ meta.premiumFeatures.join(' · ') }}</div>
+                    <div class="banner-extra" *ngIf="meta.recentStats?.length"><strong>So far:</strong> {{ statsLine() }}</div>
                 </div>
                 <div class="actions eval-actions">
                     <ng-container *ngIf="!remindMeSent">
@@ -91,7 +95,10 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
                 </div>
             </div>
             <div class="update-banner major" *ngIf="meta.tier !== 'trial'">
-                <div><strong>🔓 Free tier</strong> — premium features need a licence. Start your <strong>14-day free trial</strong> below (card required, nothing charged until day 15, cancel any time) or buy a lifetime licence. Configure, preview and test-send stay active; scheduled sending needs a licence. Your setup is saved and reactivates instantly with a key.</div>
+                <div><strong>🔓 Free tier</strong> — premium features need a licence. Start your <strong>14-day free trial</strong> below (card required, nothing charged until day 15, cancel any time) or buy a lifetime licence. Configure, preview and test-send stay active; scheduled sending needs a licence. Your setup is saved and reactivates instantly with a key.
+                    <div class="banner-extra" *ngIf="meta.premiumFeatures?.length">With a licence: {{ meta.premiumFeatures.join(' · ') }}</div>
+                    <div class="banner-extra" *ngIf="meta.recentStats?.length"><strong>{{ meta.eval?.source === 'server' ? 'During your evaluation:' : 'So far:' }}</strong> {{ statsLine() }}</div>
+                </div>
                 <div class="actions"><select [(ngModel)]="buyPlan" [disabled]="buying" style="padding:5px 9px;border:1px solid #d1d5db;border-radius:7px;font-size:12.5px;background:#fff;color:inherit"><option value="monthly">Monthly</option><option value="annual">Annual (2 months free)</option><option value="lifetime">Lifetime</option></select>
                     <button class="gbtn gbtn-primary gbtn-sm" (click)="buyLicence()" [disabled]="buying">{{ buying ? 'Opening checkout…' : 'Buy licence →' }}</button>
                     <span *ngIf="claim?.state === 'pending'" style="font-size:12.5px;font-weight:600">⏳ Waiting for checkout to finish — the licence installs itself. <a (click)="checkClaim(true)" style="cursor:pointer;text-decoration:underline">Check now</a></span>
@@ -134,9 +141,24 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
 
         <!-- OVERVIEW -->
         <ng-container *ngIf="!loading && current && tab==='overview'">
+            <vdr-page-block *ngIf="showSetup()">
+                <div class="card setup-card"><div class="card-block">
+                    <div class="row-between">
+                        <h3 class="step-title" style="margin:0">Set-up checklist <small>{{ setupDone() }} of {{ setup.items.length }} done</small></h3>
+                        <a class="hint-link" (click)="hideSetup()">Hide</a>
+                    </div>
+                    <div class="setup-row" *ngFor="let i of setup.items">
+                        <span class="dot" [class.on]="i.done" aria-hidden="true"></span>
+                        <div class="setup-text"><strong>{{ i.label }}</strong><div class="hint" style="margin:0">{{ i.hint }}</div></div>
+                        <button class="gbtn gbtn-outline gbtn-sm" *ngIf="!i.done && i.tab && i.tab !== tab" (click)="go($any(i.tab))">Open {{ i.tab }}</button>
+                        <a class="gbtn gbtn-outline gbtn-sm" *ngIf="!i.done && !i.tab && i.url" [href]="i.url" target="_blank" rel="noopener">Docs ↗</a>
+                    </div>
+                </div></div>
+            </vdr-page-block>
             <vdr-page-block>
                 <div class="kpi-row">
                     <div class="kpi"><div class="kpi-label">Sent</div><div class="kpi-num">{{ stats?.totals?.sent || 0 }}</div><div class="kpi-sub">last 30 days</div></div>
+                    <div class="kpi"><div class="kpi-label">Clicked</div><div class="kpi-num">{{ stats?.totals?.clicked || 0 }}<span class="kpi-pct" *ngIf="clickRate() !== null"> · {{ clickRate() }}%</span></div><div class="kpi-sub">review link opened · last 30 days</div></div>
                     <div class="kpi" [class.kpi-alert]="pendingTotal()>0"><div class="kpi-label">Eligible now</div><div class="kpi-num">{{ pendingTotal() }}</div><div class="kpi-sub">will send on next run</div></div>
                     <div class="kpi"><div class="kpi-label">Opt-outs</div><div class="kpi-num">{{ stats?.optOuts || 0 }}</div><div class="kpi-sub">all time</div></div>
                     <div class="kpi" [class.kpi-alert]="stats?.totals?.failed>0"><div class="kpi-label">Failed</div><div class="kpi-num">{{ stats?.totals?.failed || 0 }}</div><div class="kpi-sub">last 30 days</div></div>
@@ -217,6 +239,27 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
                         <div class="hint" style="margin-top:4px">Each product on the order gets its own "Review this" button linking here. Point it at your product page's review form.</div></div>
                 </div>
                 <p class="hint" style="margin-top:8px">That's the essentials — flip the switch on at the top and you're live. Everything else has sensible defaults.</p>
+            </div></div></vdr-page-block>
+
+            <vdr-page-block><div class="card"><div class="card-block">
+                <div class="row-between">
+                    <h3 class="step-title" style="margin:0">Weekly report</h3>
+                    <span class="gb-switch-group" *ngIf="digest">
+                        <button class="gb-switch" role="switch" [attr.aria-checked]="digest.enabled" [class.on]="digest.enabled" (click)="toggleDigest()" [disabled]="digestSaving" aria-label="Send the weekly report"><span class="gb-switch-knob" aria-hidden="true"></span></button>
+                        <span class="gb-switch-label">{{ digest.enabled ? 'On' : 'Off' }}</span>
+                    </span>
+                </div>
+                <p class="hint">Every Monday at 08:00 (server time) one email sums up last week — invitations sent, review links clicked, opt-outs, failures — with the next set-up step while the checklist is incomplete. It goes through the same SMTP as the invitations.</p>
+                <ng-container *ngIf="digest; else digestLoading">
+                    <div class="picker">
+                        <input class="form-input" style="min-width:280px" type="email" [(ngModel)]="digestRecipient" [placeholder]="digest.defaultRecipient ? 'Defaults to ' + digest.defaultRecipient : 'you@yourstore.com'">
+                        <button class="gbtn gbtn-primary gbtn-sm" (click)="saveDigestRecipient()" [disabled]="digestSaving">{{ digestSaving ? 'Saving…' : 'Save recipient' }}</button>
+                        <button class="gbtn gbtn-outline gbtn-sm" (click)="sendDigestTest()" [disabled]="digestSending">{{ digestSending ? 'Sending…' : 'Send me a test' }}</button>
+                        <button class="gbtn gbtn-outline gbtn-sm" (click)="previewDigest()" [disabled]="digestPreviewing">{{ digestPreviewing ? 'Building…' : 'Preview' }}</button>
+                    </div>
+                    <p class="hint">Last sent {{ digest.lastSentAt ? (digest.lastSentAt | date:'d MMM y, HH:mm') : 'never' }} · next {{ digest.nextDueAt ? (digest.nextDueAt | date:'d MMM y, HH:mm') : '—' }}<span *ngIf="digest.enabled && !digest.recipient && !digest.defaultRecipient"> · <strong>no recipient yet</strong> — enter one above or set a reply-to for the channel</span></p>
+                </ng-container>
+                <ng-template #digestLoading><p class="hint">{{ digestError || 'Loading…' }}</p></ng-template>
             </div></div></vdr-page-block>
 
             <vdr-page-block><div class="card"><div class="card-block">
@@ -465,7 +508,17 @@ type Tab = 'overview' | 'settings' | 'email' | 'exclusions' | 'activity';
         .table td { padding:9px 10px; border-bottom:1px solid var(--gb-line-soft); color:var(--gb-strong); }
         .table .num-col { text-align:right; }
         .pill { font-size:11px; font-weight:700; padding:2px 9px; border-radius:999px; border:1px solid var(--gb-line); background:var(--gb-surface-2); }
-        .st-sent { background:var(--gb-tint-ok); border-color:var(--gb-line-ok); } .st-skipped { background:var(--gb-tint-info); border-color:var(--gb-line-info); } .st-failed { background:var(--gb-tint-bad); border-color:var(--gb-line-bad); }
+        .st-sent { background:var(--gb-tint-ok); border-color:var(--gb-line-ok); } .st-skipped { background:var(--gb-tint-info); border-color:var(--gb-line-info); } .st-failed { background:var(--gb-tint-bad); border-color:var(--gb-line-bad); } .st-sending { background:var(--gb-tint-warn); border-color:var(--gb-line-warn); }
+        .kpi-pct { font-size:14px; font-weight:600; color:var(--gb-muted); }
+        .notice-strip { margin:8px 0 0; padding:10px 14px; border-radius:8px; font-size:13px; line-height:1.5; background:#fffbeb; border:1px solid #fcd34d; color:#92400e; }
+        .banner-extra { margin-top:6px; font-size:12.5px; color:var(--gb-muted); }
+        .setup-card { border-left:4px solid var(--gb-amber); }
+        .setup-row { display:flex; align-items:flex-start; gap:12px; padding:10px 0; }
+        .setup-row + .setup-row { border-top:1px solid var(--gb-line-soft); }
+        .setup-text { flex:1; min-width:0; font-size:13px; }
+        .dot { flex:0 0 auto; width:12px; height:12px; margin-top:4px; border-radius:50%; background:var(--gb-line); }
+        .dot.on { background:var(--gb-ok); box-shadow:0 0 0 3px color-mix(in srgb,var(--gb-ok) 25%,transparent); }
+        .hint-link { font-size:12px; color:var(--gb-muted); cursor:pointer; text-decoration:underline; }
         .picker { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
         .form-row { margin-bottom:14px; }
         .mini-chip { font-size:11px; font-weight:600; padding:2px 7px; border-radius:5px; background:var(--gb-surface); border:1px solid var(--gb-line-warn); color:var(--gb-strong); }
@@ -642,6 +695,94 @@ export class ReviewRequestsComponent implements OnInit {
         });
     }
 
+    /** "12 review invitations sent · 3 review links clicked" from the 30-day figures the server computed. */
+    statsLine(): string {
+        return (this.meta?.recentStats || []).map((s: any) => `${s.value} ${s.label}`).join(' · ');
+    }
+
+    /** One wording for every "needs a licence" failure (402 or a licence error code), else the server's message. */
+    errMsg(e: any, what: string, fallback?: string): string {
+        const code = e?.error?.error;
+        if (e?.status === 402 || code === 'licence-required' || code === 'licence_required' || code === 'premium-feature') {
+            return `${what} needs a licence — start the free trial or activate a key at the top of this page.`;
+        }
+        return e?.error?.message || e?.error?.reason || fallback || `${what} failed`;
+    }
+
+    // ── Set-up checklist (Overview) ───────────────────────────────────
+    setup: { items: Array<{ key: string; label: string; done: boolean; hint: string; tab?: string; url?: string }>; complete: boolean } | null = null;
+    private static readonly SETUP_HIDDEN_KEY = 'hulo-vendure-plugin-review-requests-setup-hidden';
+    private static readonly SETUP_HIDDEN_UNDONE_KEY = 'hulo-vendure-plugin-review-requests-setup-hidden-undone';
+    loadSetup() { this.http.get<any>('/review-requests/setup').subscribe({ next: s => { this.setup = s; this.cdr.markForCheck(); }, error: () => undefined }); }
+    setupDone(): number { return (this.setup?.items || []).filter(i => i.done).length; }
+    /** Hidden once complete, or after "Hide" — unless an item has come undone since it was hidden. */
+    showSetup(): boolean {
+        if (!this.setup || this.setup.complete) return false;
+        let hidden = '', snapshot = '';
+        try { hidden = localStorage.getItem(ReviewRequestsComponent.SETUP_HIDDEN_KEY) || ''; snapshot = localStorage.getItem(ReviewRequestsComponent.SETUP_HIDDEN_UNDONE_KEY) || ''; } catch { /* storage unavailable */ }
+        if (hidden !== '1') return true;
+        const wasUndone = new Set(snapshot.split(',').filter(Boolean));
+        return this.setup.items.some(i => !i.done && !wasUndone.has(i.key));
+    }
+    hideSetup() {
+        const undone = (this.setup?.items || []).filter(i => !i.done).map(i => i.key).join(',');
+        try { localStorage.setItem(ReviewRequestsComponent.SETUP_HIDDEN_KEY, '1'); localStorage.setItem(ReviewRequestsComponent.SETUP_HIDDEN_UNDONE_KEY, undone); } catch { /* storage unavailable */ }
+        this.cdr.markForCheck();
+    }
+    clickRate(): number | null {
+        const sent = Number(this.stats?.totals?.sent || 0);
+        if (!sent) return null;
+        return Math.round((Number(this.stats?.totals?.clicked || 0) / sent) * 1000) / 10;
+    }
+
+    // ── Weekly report (Settings) ──────────────────────────────────────
+    digest: { enabled: boolean; recipient: string | null; defaultRecipient: string | null; lastSentAt: string | null; nextDueAt: string | null } | null = null;
+    digestRecipient = '';
+    digestError = '';
+    digestSaving = false; digestSending = false; digestPreviewing = false;
+    loadDigest() {
+        this.http.get<any>('/review-requests/digest/settings').subscribe({
+            next: d => { this.digest = d; this.digestRecipient = d?.recipient || ''; this.cdr.markForCheck(); },
+            error: () => { this.digestError = 'Weekly report settings are unavailable.'; this.cdr.markForCheck(); },
+        });
+    }
+    private saveDigest(patch: { enabled?: boolean; recipient?: string | null }, okMsg: string) {
+        this.digestSaving = true;
+        this.http.post<any>('/review-requests/digest/settings', patch).subscribe({
+            next: d => { this.digestSaving = false; this.digest = d; this.digestRecipient = d?.recipient || ''; this.notify.success(okMsg); this.cdr.markForCheck(); },
+            error: e => { this.digestSaving = false; this.notify.error(this.errMsg(e, 'Saving the weekly report settings')); this.cdr.markForCheck(); },
+        });
+    }
+    toggleDigest() { if (this.digest) this.saveDigest({ enabled: !this.digest.enabled }, this.digest.enabled ? 'Weekly report switched off' : 'Weekly report switched on'); }
+    saveDigestRecipient() { this.saveDigest({ recipient: (this.digestRecipient || '').trim() || null }, 'Recipient saved'); }
+    sendDigestTest() {
+        this.digestSending = true;
+        const to = (this.digestRecipient || '').trim();
+        this.http.post<any>('/review-requests/digest/send-test', to ? { to } : {}).subscribe({
+            next: r => {
+                this.digestSending = false;
+                if (r?.sent) this.notify.success(`Sent "${r.subject}" to ${r.to}`);
+                else this.notify.error(r?.reason === 'no-recipient' ? 'No recipient — enter an address first' : (r?.reason || 'Could not send the report'));
+                this.loadDigest();
+            },
+            error: e => { this.digestSending = false; this.notify.error(this.errMsg(e, 'Sending the test report')); this.cdr.markForCheck(); },
+        });
+    }
+    /** Fetched with the same authenticated HttpClient (works with cookie or bearer auth), then shown from a Blob URL. */
+    previewDigest() {
+        this.digestPreviewing = true;
+        this.http.get('/review-requests/digest/preview', { responseType: 'text' }).subscribe({
+            next: html => {
+                this.digestPreviewing = false;
+                const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+                window.open(url, '_blank', 'noopener');
+                setTimeout(() => URL.revokeObjectURL(url), 60_000);
+                this.cdr.markForCheck();
+            },
+            error: e => { this.digestPreviewing = false; this.notify.error(this.errMsg(e, 'Building the preview')); this.cdr.markForCheck(); },
+        });
+    }
+
     // Buy-from-admin: opens HULO checkout in a new tab; the licence server
     // binds the purchase to this install and the key installs itself.
     buyPlan: 'monthly' | 'annual' | 'lifetime' = 'monthly';
@@ -694,7 +835,7 @@ export class ReviewRequestsComponent implements OnInit {
         if (l.trialEndsAt && new Date(l.trialEndsAt).getTime() > Date.now()) {
             return `free trial on the ${l.plan} plan — first charge on ${d(l.trialEndsAt)}; cancel any time before then via Manage billing`;
         }
-        return `${l.plan} subscription — renews automatically${l.expiresAt ? ' (current key valid until ' + d(l.expiresAt) + ')' : ''}`;
+        return `${l.plan} subscription. Renews automatically${l.expiresAt ? ' — current key valid until ' + d(l.expiresAt) : ''}`;
     }
     openPortal() {
         this.portalOpening = true;
@@ -769,7 +910,8 @@ export class ReviewRequestsComponent implements OnInit {
     }
     go(t: Tab) { this.tab = t; this.loadForTab(t); }
     private loadForTab(t: Tab) {
-        if (t === 'overview') { this.loadStats(); this.loadLog(); }
+        if (t === 'overview') { this.loadSetup(); this.loadStats(); this.loadLog(); }
+        if (t === 'settings') this.loadDigest();
         if (t === 'email') this.loadTemplate();
         if (t === 'exclusions') { this.loadExclusions(); this.loadStats(); }
         if (t === 'activity') this.loadLog();
@@ -799,8 +941,8 @@ export class ReviewRequestsComponent implements OnInit {
     runNow() {
         this.running = true;
         this.http.post<any>('/review-requests/run', {}).subscribe({
-            next: r => { this.running = false; const sent = (r.results||[]).reduce((n:number,x:any)=>n+(x.sent||0),0); this.notify.success(`Sent ${sent} invitation(s)`); this.loadStats(); this.loadLog(); },
-            error: err => { this.running = false; this.notify.error(err?.error?.message || 'Run failed'); },
+            next: r => { this.running = false; const sent = (r.results||[]).reduce((n:number,x:any)=>n+(x.sent||0),0); this.notify.success(`Sent ${sent} invitation(s)`); this.loadStats(); this.loadLog(); this.loadSetup(); },
+            error: err => { this.running = false; this.notify.error(this.errMsg(err, 'Sending due invitations', 'Run failed')); },
         });
     }
     connect() {
@@ -907,7 +1049,7 @@ export class ReviewRequestsComponent implements OnInit {
         if (!this.current || !this.testEmail) return; this.testing = true;
         this.http.post<any>('/review-requests/test-send', { channelId: this.current.channelId, email: this.testEmail }).subscribe({
             next: r => { this.testing = false; r.ok ? this.notify.success('Test sent — check your inbox') : this.notify.error(r.reason || 'Send failed'); },
-            error: err => { this.testing = false; this.notify.error(err?.error?.reason || 'Send failed'); },
+            error: err => { this.testing = false; this.notify.error(this.errMsg(err, 'Sending a test email', 'Send failed')); },
         });
     }
 

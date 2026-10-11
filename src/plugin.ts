@@ -1,7 +1,7 @@
-import { PluginCommonModule, Type, VendurePlugin } from '@vendure/core';
+import { PluginCommonModule, ProcessContext, Type, VendurePlugin } from '@vendure/core';
 import {
     fingerprintPublicKey, Heartbeat, LicenceStatus, RevocationChecker, UpdateChecker,
-    verifyLicence, warnIfIncompatibleVendure, EvaluationClient, EvaluationState,
+    verifyLicence, warnIfIncompatibleVendure, EvaluationClient, EvaluationState, describeLicence,
 } from '@huloglobal/vendure-licence-sdk';
 
 import { ReviewRequestService } from './review-request.service';
@@ -106,17 +106,44 @@ export class ReviewRequestPlugin {
         }
     }
 
-    constructor(private service: ReviewRequestService) {
+    /** `paid` / `trial` / `free` exactly as the admin page shows it. */
+    static tier(): 'paid' | 'trial' | 'free' {
+        if (ReviewRequestPlugin.licenceStatus?.valid) return 'paid';
+        return ReviewRequestPlugin.evalClient?.getState()?.active ? 'trial' : 'free';
+    }
+
+    constructor(private service: ReviewRequestService, private processContext: ProcessContext) {
         this.service.setOptions(cachedOptions);
-        // Anonymous aggregates for the (opt-in) evaluation reminder emails —
-        // "you sent N invitations during your trial" converts far better
-        // than generic copy. Numbers only, never personal data.
-        ReviewRequestPlugin.evalClient?.setStatsProvider(() => this.service.evalStats());
+        // Anonymous 30-day aggregates: the (opt-in) evaluation reminder emails
+        // before purchase, the daily heartbeat after it — "you sent N
+        // invitations" converts far better than generic copy. Numbers only,
+        // never personal data.
+        const stats = () => this.service.evalStats();
+        ReviewRequestPlugin.evalClient?.setStatsProvider(stats);
+        ReviewRequestPlugin.heartbeat?.setStatsProvider(stats);
+        // Weekly report + setup checklist need the tier; hooks keep the
+        // service free of any import of this class.
+        this.service.initEngagement({
+            tier: () => ReviewRequestPlugin.tier(),
+            licence: () => describeLicence(ReviewRequestPlugin.licenceStatus),
+            evalState: () => ReviewRequestPlugin.getEvalState(),
+            refresh: () => this.restoreStoredLicence(),
+        });
+    }
+
+    /** A key activated from the admin lives in the server process; the worker
+     *  re-loads it before its own work (cron, weekly report). */
+    private async restoreStoredLicence(): Promise<void> {
+        if (ReviewRequestPlugin.isLicensed()) return;
+        const stored = await this.service.loadStoredLicenceKey().catch(() => null);
+        if (stored) ReviewRequestPlugin.activateRuntimeLicence(stored);
     }
 
     /** Apply an admin-activated licence key persisted in the DB. Runs
-     *  after DI is up; an explicitly configured env/init key wins. */
+     *  after DI is up; an explicitly configured env/init key wins. The
+     *  weekly report scheduler starts here, on the worker only. */
     async onApplicationBootstrap() {
+        if (this.processContext.isWorker && !cachedOptions.disableCron) this.service.startDigest();
         if (ReviewRequestPlugin.isLicensed()) return;
         const stored = await this.service.loadStoredLicenceKey();
         if (stored) {
@@ -166,6 +193,7 @@ export class ReviewRequestPlugin {
         ngModules: [
             { type: 'lazy' as const, route: 'review-requests', ngModuleFileName: 'review-requests.module.ts', ngModuleName: 'ReviewRequestsModule' },
             { type: 'shared' as const, ngModuleFileName: 'order-review-shared.module.ts', ngModuleName: 'OrderReviewSharedModule' },
+            { type: 'shared' as const, ngModuleFileName: 'review-requests-nav.module.ts', ngModuleName: 'ReviewRequestsNavModule' },
         ],
     };
 }

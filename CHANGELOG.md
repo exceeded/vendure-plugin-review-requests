@@ -4,6 +4,59 @@ All notable changes to `@huloglobal/vendure-plugin-review-requests` are document
 here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project
 follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] — 2026-10-11
+
+Retention pass: a weekly report, a set-up checklist, a dashboard widget and
+review-link click tracking. One shared table (`hulo_plugin_prefs`) and one
+column (`review_log.clickedAt`, with an index) are created on boot. Requires
+`@huloglobal/vendure-licence-sdk` 0.15.0.
+
+### Added
+- **Review-link click tracking.** The review button in every real
+  invitation now goes through a signed redirect (`GET
+  /review-requests/r/<token>`, HMAC over the log row id using the same
+  secret as unsubscribe links) that stamps `review_log.clickedAt` on the
+  first click and sends the customer on to the review page. Previews and
+  test emails link straight to the review page. The Overview gains a
+  **Clicked (30d)** tile with the click-through rate next to **Sent**.
+- **Weekly report.** Every Monday at 08:00 (server time) the worker emails
+  last week's figures — invitations sent, review links clicked, orders
+  skipped, failures, opt-outs — against the previous week, plus up to three
+  next steps from the set-up checklist, through the plugin's own SMTP. A
+  **Weekly report** card in Settings has the on/off switch, the recipient
+  (defaults to the first channel reply-to, then the licence customer, then
+  the trial-reminder address), the last/next send time, **Send me a test**
+  and **Preview**. Endpoints: `GET/POST digest/settings`,
+  `POST digest/send-test`, `GET digest/preview`.
+- **Set-up checklist** at the top of the Overview (`GET setup`): SMTP
+  reachable, invitation email saved, business name and review page set,
+  sending switched on, first invitation sent — each with a hint and a link
+  to the right tab. Hide it once you are done; it comes back if an item
+  comes undone. The same items feed the weekly report's next steps.
+- **Admin navigation and dashboard widget.** "Review Requests" appears in
+  the Marketing section of the admin nav (star icon), and a dashboard widget
+  (Dashboard → Add widget → Review Requests, `GET widget`) shows the 7-day
+  invitations sent, review links clicked and opt-outs with a link to the
+  page.
+- **Usage stats to the licence server.** `invitesSent`, `reviewLinkClicks`,
+  `invitesSkipped`, `invitesFailed` and `optOuts` for the last 30 days are
+  reported through both the evaluation client and the daily heartbeat, so
+  renewal and win-back emails can say what the plugin did. Numbers only.
+
+### Changed
+- **Licence banners.** `GET meta` now includes `notice` (trial ending, key
+  expiring, evaluation ended), `premiumFeatures`, `recentStats` and
+  `buyUrl`. The licensed banner shows the amber notice strip when one
+  applies and reads "Renews automatically — current key valid until …" for
+  subscriptions; the trial and free banners list what a licence includes
+  and the 30-day figures so far. Every "needs a licence" failure (402 or
+  a `licence_required` / `premium-feature` body) is worded the same way in
+  the admin, and 402 bodies carry `buyUrl`.
+- **Send log.** A real send writes its `review_log` row as `sending` before
+  the email goes out (so the email can carry that row's click link), then
+  sets `sent` or `failed`. `logSend` returns the row id.
+- `evalStats()` reports the last 30 days (was all-time `invitesSent`).
+
 ## [0.15.3] — 2026-09-28
 
 Optimisation pass — no new features, no new tables. `review_template.body`
