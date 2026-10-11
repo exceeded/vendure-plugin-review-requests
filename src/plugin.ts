@@ -74,10 +74,14 @@ export class ReviewRequestPlugin {
     }
 
     private static licenceHost = '';
+    /** The key currently in force (env/init, admin-activated or claim-installed);
+     *  the heartbeat reads it live so its jti follows activation and deactivation. */
+    private static activeKey: string | null = null;
 
-    /** Verify + apply a licence key at runtime (admin-UI activation).
-     *  Identical checks to boot-time verification: signature, pluginId,
-     *  domain binding, expiry, revocation list. Only applied when valid. */
+    /** Verify + apply a licence key at runtime (admin-UI activation and the
+     *  purchase-claim install both come through here). Identical checks to
+     *  boot-time verification: signature, pluginId, domain binding, expiry,
+     *  revocation list. Only applied when valid. */
     static activateRuntimeLicence(key: string): LicenceStatus {
         const status = verifyLicence({
             licenceKey: key, pluginId: PLUGIN_ID, host: ReviewRequestPlugin.licenceHost,
@@ -85,6 +89,7 @@ export class ReviewRequestPlugin {
         });
         if (status.valid) {
             ReviewRequestPlugin.licenceStatus = status;
+            ReviewRequestPlugin.activeKey = key;
             ReviewRequestPlugin.evalClient?.stop();
         }
         return status;
@@ -98,6 +103,7 @@ export class ReviewRequestPlugin {
             valid: false,
             message: 'No licence key configured. The plugin will run in unlicensed (degraded) mode.',
         } as LicenceStatus;
+        ReviewRequestPlugin.activeKey = null;
         if (ReviewRequestPlugin.evalClient) {
             ReviewRequestPlugin.evalClient.start();
         } else {
@@ -166,6 +172,7 @@ export class ReviewRequestPlugin {
             licenceKey: options.licenceKey, pluginId: PLUGIN_ID, host,
             publicKey: HULO_PUBLIC_KEY, revokedIds: ReviewRequestPlugin.revocation.getRevokedIds(),
         });
+        ReviewRequestPlugin.activeKey = ReviewRequestPlugin.licenceStatus.valid ? (options.licenceKey || null) : null;
         if (!ReviewRequestPlugin.licenceStatus.valid) {
             // Unlicensed: register the install (no premium is granted by this; the 14-day
             // evaluation. All premium paths stay enabled while it runs;
@@ -182,6 +189,9 @@ export class ReviewRequestPlugin {
             ReviewRequestPlugin.heartbeat = new Heartbeat({
                 packageName: PKG_NAME, packageVersion: PKG_VERSION,
                 licenceKey: options.licenceKey, publicKeyFingerprint: fingerprintPublicKey(HULO_PUBLIC_KEY),
+                // Live key: the jti follows admin activation / purchase-claim install / deactivation,
+                // so the licence server keeps attributing usage stats after purchase.
+                licenceKeyProvider: () => ReviewRequestPlugin.activeKey,
             });
             ReviewRequestPlugin.heartbeat.start();
         }

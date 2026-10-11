@@ -74,7 +74,7 @@ checklist at the top (SMTP, email, review page, timing, first send), hit
 > **Since 0.16.0:** the review button goes through a signed click redirect on
 > `publicBaseUrl`, the worker sends a weekly report (Settings → Weekly
 > report), and the admin nav gains a Review Requests entry plus a dashboard
-> widget. Needs `@huloglobal/vendure-licence-sdk` 0.15.0.
+> widget. Needs `@huloglobal/vendure-licence-sdk` 0.15.1.
 
 ## Getting your Trustpilot bits (all free)
 

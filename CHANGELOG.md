@@ -9,7 +9,7 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 Retention pass: a weekly report, a set-up checklist, a dashboard widget and
 review-link click tracking. One shared table (`hulo_plugin_prefs`) and one
 column (`review_log.clickedAt`, with an index) are created on boot. Requires
-`@huloglobal/vendure-licence-sdk` 0.15.0.
+`@huloglobal/vendure-licence-sdk` 0.15.1.
 
 ### Added
 - **Review-link click tracking.** The review button in every real
@@ -56,6 +56,10 @@ column (`review_log.clickedAt`, with an index) are created on boot. Requires
   the email goes out (so the email can carry that row's click link), then
   sets `sent` or `failed`. `logSend` returns the row id.
 - `evalStats()` reports the last 30 days (was all-time `invitesSent`).
+- **Heartbeat jti.** The daily heartbeat reads the key currently in force
+  (`licenceKeyProvider`), so an install licensed from the admin page or by
+  the purchase claim no longer reports `unlicensed` until restart — the
+  licence server keeps its usage stats after purchase.
 
 ## [0.15.3] — 2026-09-28
 
